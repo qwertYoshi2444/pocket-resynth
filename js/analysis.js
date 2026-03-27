@@ -1,72 +1,161 @@
 'use strict';
+/**
+ * analysis.js — Spectral Analysis Engine
+ *
+ * Pipeline:
+ *   audioData → STFT frames → peak detection (parabolic interp)
+ *             → McAulay-Quatieri partial tracking
+ *             → F0 (Fundamental Frequency) estimation
+ *             → {frames, partials, spectrogram, f0Data}
+ */
 class SpectralAnalyzer {
-  constructor(opts = {}) { /* 既存通り */
-    this.fftSize = opts.fftSize || 4096; this.hopSize = this.fftSize >> 3; this.sampleRate = opts.sampleRate || 44100;
-    this.maxPartials = 200; this.threshDb = -70; this.minFrames = 3; this.freqTol = 0.05; this.spectBands = 256;
-    this.fft = new FFT(this.fftSize); this.window = this._hann(this.fftSize);
-    this.winSum = this.window.reduce((a, b) => a + b, 0);
-    this.thresh = (this.winSum / 2) * Math.pow(10, this.threshDb / 20);
-    this._real = new Float64Array(this.fftSize); this._imag = new Float64Array(this.fftSize);
+  constructor(opts = {}) {
+    this.fftSize      = opts.fftSize      || 4096;
+    this.hopSize      = opts.hopSize      || (this.fftSize >> 3);
+    this.sampleRate   = opts.sampleRate   || 44100;
+    this.maxPartials  = opts.maxPartials  || 200;
+    this.threshDb     = opts.threshDb     || -70;
+    this.minFrames    = opts.minFrames    || 3;    // min frames for valid partial
+    this.freqTol      = opts.freqTol      || 0.05; // 5% relative freq tolerance
+    this.spectBands   = opts.spectBands   || 256;  // stored spectrogram bands
+
+    this.fft     = new FFT(this.fftSize);
+    this.window  = this._hann(this.fftSize);
+    this.winSum  = this.window.reduce((a, b) => a + b, 0);
+    this.thresh  = (this.winSum / 2) * Math.pow(10, this.threshDb / 20);
+
+    this._real = new Float64Array(this.fftSize);
+    this._imag = new Float64Array(this.fftSize);
+
+    // Pre-compute log-spaced frequency bins for spectrogram storage
     this._spectFreqs = this._logSpacedFreqs(20, this.sampleRate / 2, this.spectBands);
-    this._spectBins = this._spectFreqs.map(f => Math.round(f * this.fftSize / this.sampleRate));
+    this._spectBins  = this._spectFreqs.map(f => Math.round(f * this.fftSize / this.sampleRate));
   }
 
+  // -----------------------------------------------------------------------
+  // Public API
+  // -----------------------------------------------------------------------
+
+  /**
+   * Analyze mono audio. Returns analysis result object.
+   * onProgress(0..1) called periodically.
+   */
   async analyze(audio, onProgress) {
-    // ---- 既存の Pass 1 (STFT) と Pass 2 (Partial tracking) を実行 ----
-    const sr = this.sampleRate, hop = this.hopSize, N = this.fftSize, len = audio.length;
+    const N        = this.fftSize;
+    const hop      = this.hopSize;
+    const sr       = this.sampleRate;
+    const halfN    = N >> 1;
+    const len      = audio.length;
     const numFrames = Math.max(1, Math.floor((len - N) / hop) + 1);
-    const frames = [], spectrogram = [];
-    
+
+    const frames       = [];
+    const spectrogram  = [];   // [frame][band] = magnitude (Float32)
+    const BATCH        = 64;
+
+    // ---- Pass 1: STFT frame analysis ----
     for (let fi = 0; fi < numFrames; fi++) {
-      if (fi % 64 === 0 && onProgress) { onProgress(fi / numFrames * 0.5); await yieldToUI(); }
+      if (fi % BATCH === 0) {
+        if (onProgress) onProgress(fi / numFrames * 0.5); // STFT pass takes ~50%
+        await yieldToUI();
+      }
+
       const offset = fi * hop;
       for (let i = 0; i < N; i++) {
-        this._real[i] = (offset+i < len) ? audio[offset+i] * this.window[i] : 0; this._imag[i] = 0;
+        const s = (offset + i < len) ? audio[offset + i] : 0;
+        this._real[i] = s * this.window[i];
+        this._imag[i] = 0;
       }
       this.fft.forward(this._real, this._imag);
+
+      // Store log-spaced spectrogram bands
       const band = new Float32Array(this.spectBands);
       for (let b = 0; b < this.spectBands; b++) {
         const bin = this._spectBins[b];
-        if (bin > 0 && bin < N/2) {
+        if (bin > 0 && bin < halfN) {
           const re = this._real[bin], im = this._imag[bin];
-          band[b] = Math.sqrt(re*re + im*im) * 2 / this.winSum;
+          band[b] = Math.sqrt(re * re + im * im) * 2 / this.winSum;
         }
       }
       spectrogram.push(band);
-      frames.push({ fi, time: (offset + N/2)/sr, peaks: this._detectPeaks(this._real, this._imag) });
-    }
-    const partials = await this._trackPartials(frames, numFrames, p => onProgress(0.5 + p * 0.4));
 
-    // ---- 追加: 歌わせモード用 F0(基本周波数)推定 ----
+      // Peak detection with parabolic interpolation
+      const peaks = this._detectPeaks(this._real, this._imag);
+      const time  = (offset + N / 2) / sr;
+      frames.push({ fi, time, peaks });
+    }
+
+    // ---- Pass 2: Partial tracking ----
+    // Tracking takes the remaining ~50%
+    const partials = await this._trackPartials(frames, numFrames, p => {
+      if (onProgress) onProgress(0.5 + p * 0.45);
+    });
+
+    // ---- Pass 3: F0 (Pitch) Estimation for Vocal Mode ----
     const f0Data = this._estimateF0(partials, numFrames);
+
     if (onProgress) onProgress(1.0);
 
-    return { sampleRate: sr, fftSize: N, hopSize: hop, numFrames, duration: numFrames * hop / sr, frames, partials, spectrogram, spectFreqs: this._spectFreqs, f0Data };
+    return {
+      sampleRate: sr,
+      fftSize:    N,
+      hopSize:    hop,
+      numFrames,
+      duration:   numFrames * hop / sr,
+      frames,
+      partials,
+      spectrogram,
+      spectFreqs: this._spectFreqs,
+      f0Data,     // 追加: 推定された基本周波数配列 (Float32Array)
+    };
   }
 
-  // 追加: シンプルな倍音ベースF0推定
+  // -----------------------------------------------------------------------
+  // Private: F0 Estimation (New)
+  // -----------------------------------------------------------------------
+
+  /**
+   * 倍音トラッキング結果から、各フレームのおおよその基本周波数(F0)を推定する。
+   * （ボーカルや単音楽器を想定したヒューリスティックな手法）
+   */
   _estimateF0(partials, numFrames) {
     const f0 = new Float32Array(numFrames);
-    const activeAt = Array.from({length: numFrames}, () => []);
-    for (const p of partials) for (const s of p.segs) activeAt[s.fi].push(s);
     
+    // フレームごとに存在する partial のセグメントをまとめる
+    const activeAt = Array.from({ length: numFrames }, () => []);
+    for (const p of partials) {
+      for (const s of p.segs) {
+        activeAt[s.fi].push(s);
+      }
+    }
+    
+    // 各フレームで基本波とみなせる周波数を探す
     for (let fi = 0; fi < numFrames; fi++) {
       const active = activeAt[fi];
-      if (!active.length) continue;
-      // 強い成分上位10個から一番低い周波数を基本波とみなす（ボーカル想定）
-      active.sort((a,b) => b.amp - a.amp);
+      if (active.length === 0) continue;
+      
+      // 振幅が大きい上位10成分を抽出（ボーカル帯域: 60Hz 〜 1200Hz に限定）
+      active.sort((a, b) => b.amp - a.amp);
       const tops = active.slice(0, 10).filter(s => s.freq > 60 && s.freq < 1200);
+      
       if (tops.length > 0) {
-        tops.sort((a,b) => a.freq - b.freq);
+        // 強い成分のうち、一番低い周波数を F0 とみなす
+        tops.sort((a, b) => a.freq - b.freq);
         f0[fi] = tops[0].freq;
       }
     }
-    // メディアンフィルタ（スパイク除去）
+    
+    // スパイク状の誤検出を除去するためのメディアンフィルタ (窓幅5)
     const smooth = new Float32Array(numFrames);
-    for(let i=2; i<numFrames-2; i++) {
-      const w = [f0[i-2], f0[i-1], f0[i], f0[i+1], f0[i+2]].sort((a,b)=>a-b);
+    for (let i = 2; i < numFrames - 2; i++) {
+      const w = [f0[i-2], f0[i-1], f0[i], f0[i+1], f0[i+2]].sort((a, b) => a - b);
       smooth[i] = w[2];
     }
+    // 端の処理
+    if (numFrames > 0) smooth[0] = f0[0];
+    if (numFrames > 1) smooth[1] = f0[1];
+    if (numFrames > 2) smooth[numFrames-2] = f0[numFrames-2];
+    if (numFrames > 3) smooth[numFrames-1] = f0[numFrames-1];
+    
     return smooth;
   }
 
@@ -136,7 +225,7 @@ class SpectralAnalyzer {
 
     for (let fi = 0; fi < frames.length; fi++) {
       if (fi % BATCH === 0) {
-        if (onProgress) onProgress(0.65 + 0.35 * fi / frames.length);
+        if (onProgress) onProgress(fi / frames.length);
         await yieldToUI();
       }
 
