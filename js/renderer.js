@@ -12,18 +12,24 @@ class SpectralRenderer {
     this.analysis  = null;
     this.audioData = null;
 
+    // View boundaries
     this.viewStart = 0;
     this.viewEnd   = 1;
     this.freqMin   = 20;
     this.freqMax   = 20000;
+    
     this.playhead  = 0;
+    this.startTime = 0; // クリックで設定される再生開始時間
 
     // Vocal Mode states
     this.appMode = 'synth';
-    this.f0Data = null;       // Original F0 Float32Array
-    this.editedF0 = null;     // User override Float32Array
+    this.f0Data = null;
+    this.editedF0 = null;
     this.isSnapMode = true;
     this.showOrigF0 = true;
+
+    // Callback
+    this.onSetStartTime = null;
 
     this._colormap = this._buildColormap();
     this._bindEvents();
@@ -34,6 +40,9 @@ class SpectralRenderer {
     this.audioData = audioData;
     this.viewStart = 0;
     this.viewEnd   = analysis.duration;
+    this.freqMin   = 20;
+    this.freqMax   = 20000;
+    this.startTime = 0;
     this.renderAll();
   }
 
@@ -50,7 +59,7 @@ class SpectralRenderer {
   }
 
   // -----------------------------------------------------------------------
-  // Renderers (Waveform, Spectrogram, Partials) -> Existing
+  // Renderers
   // -----------------------------------------------------------------------
   _drawWaveform() {
     const cv = this.waveC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
@@ -109,7 +118,13 @@ class SpectralRenderer {
       }
     }
     cx.putImageData(img, 0, 0);
-    this._drawFreqGrid(cx, W, H);
+
+    // グリッドの描画をモードで分岐
+    if (this.appMode === 'vocal') {
+      this._drawMidiGrid(cx, W, H);
+    } else {
+      this._drawFreqGrid(cx, W, H);
+    }
   }
 
   _nearestBandIdx(freq, bands) {
@@ -135,6 +150,41 @@ class SpectralRenderer {
     }
   }
 
+  _drawMidiGrid(cx, W, H) {
+    cx.font = '10px monospace'; cx.textAlign = 'left';
+    
+    // 表示されている周波数範囲に収まるMIDIノートを計算
+    const minMidi = Math.floor(69 + 12 * Math.log2(this.freqMin / 440));
+    const maxMidi = Math.ceil(69 + 12 * Math.log2(this.freqMax / 440));
+    
+    const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+    for (let m = minMidi; m <= maxMidi; m++) {
+      const freq = 440 * Math.pow(2, (m - 69) / 12);
+      if (freq < this.freqMin || freq > this.freqMax) continue;
+      
+      const y = this._freqToY(freq, H);
+      const isBlack = [1,3,6,8,10].includes(m % 12);
+      const isC = (m % 12 === 0);
+
+      if (isBlack) {
+        cx.strokeStyle = 'rgba(255,255,255,0.04)'; cx.lineWidth = 1;
+      } else {
+        cx.strokeStyle = isC ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.08)'; 
+        cx.lineWidth = isC ? 1.5 : 1;
+      }
+
+      cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
+
+      // C音にラベルを描画
+      if (isC) {
+        const oct = Math.floor(m / 12) - 1;
+        cx.fillStyle = 'rgba(255,255,255,0.5)';
+        cx.fillText(`C${oct}`, 3, y - 2);
+      }
+    }
+  }
+
   _drawPartials() {
     const cv = this.partC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
@@ -152,6 +202,7 @@ class SpectralRenderer {
       for (const seg of p.segs) {
         if (seg.amp < 1e-5) { penDown = false; continue; }
         const t = seg.fi * hopSize / sampleRate;
+        if (t < this.viewStart || t > this.viewEnd) continue; // 表示外クリップ
         const x = this._timeToX(t, W);
         const y = this._freqToY(seg.freq, H);
         if (!penDown) { cx.moveTo(x, y); penDown = true; } else cx.lineTo(x, y);
@@ -160,14 +211,21 @@ class SpectralRenderer {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // UI Overlay (Playhead, F0 Curve)
-  // -----------------------------------------------------------------------
   _drawUI() {
     const cv = this.uiC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
 
-    // Playhead
+    // Start Time Marker (Green)
+    if (this.startTime >= this.viewStart && this.startTime <= this.viewEnd) {
+      const sx = this._timeToX(this.startTime, W);
+      cx.strokeStyle = 'rgba(29, 185, 84, 0.8)'; cx.lineWidth = 2;
+      cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx, H); cx.stroke();
+      
+      cx.fillStyle = 'rgba(29, 185, 84, 0.8)';
+      cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx+6, 0); cx.lineTo(sx, 12); cx.lineTo(sx-6, 0); cx.fill();
+    }
+
+    // Playhead (Red)
     if (this.playhead >= this.viewStart && this.playhead <= this.viewEnd) {
       const xp = this._timeToX(this.playhead, W);
       cx.strokeStyle = '#ff4444'; cx.lineWidth = 1.5;
@@ -179,7 +237,6 @@ class SpectralRenderer {
     // F0 Curve (Vocal mode)
     if (this.appMode === 'vocal' && this.analysis && this.f0Data) {
       const { hopSize, sampleRate } = this.analysis;
-      
       if (this.showOrigF0) {
         cx.strokeStyle = 'rgba(88, 166, 255, 0.6)';
         cx.lineWidth = 2; cx.setLineDash([4,4]);
@@ -209,39 +266,134 @@ class SpectralRenderer {
   }
 
   // -----------------------------------------------------------------------
-  // Interaction (Zoom & F0 Edit)
+  // Interaction (Pan, Zoom, Set Start, F0 Edit)
   // -----------------------------------------------------------------------
   _bindEvents() {
     const ui = this.uiC;
-    let dragging = false;
+    let draggingLeft = false, draggingPan = false;
     let prevX = 0;
+    
+    // パン用初期状態保存
+    let panStartX = 0, panStartY = 0;
+    let panVStart = 0, panVEnd = 0;
+    let panFMinL = 0, panFMaxL = 0;
 
     ui.addEventListener('mousedown', e => {
-      dragging = true; prevX = e.offsetX;
-      if (this.appMode === 'vocal') this._editF0(e.offsetX, e.offsetY, prevX, ui.width, ui.height);
+      // 右クリック or 中クリック -> パン移動
+      if (e.button === 1 || e.button === 2) {
+        draggingPan = true;
+        panStartX = e.offsetX; panStartY = e.offsetY;
+        panVStart = this.viewStart; panVEnd = this.viewEnd;
+        panFMinL = Math.log2(this.freqMin); panFMaxL = Math.log2(this.freqMax);
+        return;
+      }
+
+      // 左クリック
+      draggingLeft = true; 
+      prevX = e.offsetX;
+      
+      // ボーカルモードの場合は即座に描画
+      if (this.appMode === 'vocal') {
+        this._editF0(e.offsetX, e.offsetY, prevX, ui.width, ui.height);
+      }
     });
 
     ui.addEventListener('mousemove', e => {
-      if (!dragging) return;
-      if (this.appMode === 'vocal') {
+      // パン移動
+      if (draggingPan) {
+        const dx = e.offsetX - panStartX;
+        const dy = e.offsetY - panStartY;
+        
+        // 時間パン
+        const timeSpan = panVEnd - panVStart;
+        const dt = (dx / ui.width) * timeSpan;
+        let newStart = panVStart - dt;
+        let newEnd = panVEnd - dt;
+
+        // クランプ
+        const maxTime = this.analysis ? this.analysis.duration : 60;
+        if (newStart < 0) { newEnd -= newStart; newStart = 0; }
+        if (newEnd > maxTime) { newStart -= (newEnd - maxTime); newEnd = maxTime; }
+        this.viewStart = Math.max(0, newStart);
+        this.viewEnd = Math.min(maxTime, newEnd);
+
+        // 周波数パン (log)
+        const freqSpanL = panFMaxL - panFMinL;
+        const df = (dy / ui.height) * freqSpanL; // 上が-dyになるため符号に注意（キャンバスは下が正）
+        
+        let newFMaxL = panFMaxL + df;
+        let newFMinL = panFMinL + df;
+        
+        const minL = Math.log2(20);
+        const maxL = Math.log2(20000);
+        
+        if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
+        if (newFMinL < minL) { newFMaxL -= (newFMinL - minL); newFMinL = minL; }
+        
+        this.freqMax = Math.pow(2, newFMaxL);
+        this.freqMin = Math.pow(2, newFMinL);
+
+        this.renderAll();
+        return;
+      }
+
+      // ピッチ描画
+      if (draggingLeft && this.appMode === 'vocal') {
         this._editF0(e.offsetX, e.offsetY, prevX, ui.width, ui.height);
         prevX = e.offsetX;
       }
     });
 
-    ui.addEventListener('mouseup', () => { dragging = false; });
-    ui.addEventListener('mouseleave', () => { dragging = false; });
+    ui.addEventListener('mouseup', e => {
+      if (e.button === 1 || e.button === 2) { draggingPan = false; return; }
+      
+      if (draggingLeft) {
+        draggingLeft = false;
+        // マウスの移動がほとんどなかった場合は「クリック」とみなし、開始位置を設定
+        if (Math.abs(e.offsetX - prevX) < 3) {
+          const t = this._xToTime(e.offsetX, ui.width);
+          this.startTime = Math.max(0, Math.min(t, this.analysis ? this.analysis.duration : 60));
+          if (this.onSetStartTime) this.onSetStartTime(this.startTime);
+          this._drawUI();
+        }
+      }
+    });
 
-    // Scroll to zoom
+    ui.addEventListener('mouseleave', () => { draggingLeft = false; draggingPan = false; });
+
+    // ホイールズーム
     ui.addEventListener('wheel', e => {
       e.preventDefault();
-      const t     = this._xToTime(e.offsetX, ui.width);
-      const span  = this.viewEnd - this.viewStart;
       const scale = e.deltaY > 0 ? 1.15 : 0.87;
-      const newSpan = Math.max(0.05, Math.min(this.analysis ? this.analysis.duration : 60, span * scale));
-      this.viewStart = Math.max(0, t - (t - this.viewStart) / span * newSpan);
-      this.viewEnd   = this.viewStart + newSpan;
-      if (this.analysis && this.viewEnd > this.analysis.duration) this.viewEnd = this.analysis.duration;
+
+      if (e.shiftKey) {
+        // Shift + ホイール = Y軸（周波数）ズーム
+        const f = this._yToFreq(e.offsetY, ui.height);
+        const fL = Math.log2(f);
+        const spanL = Math.log2(this.freqMax) - Math.log2(this.freqMin);
+        const newSpanL = Math.max(Math.log2(10), spanL * scale); // 過剰ズーム防止
+        
+        // f が動かないように
+        let newFMinL = fL - (fL - Math.log2(this.freqMin)) * (newSpanL / spanL);
+        let newFMaxL = newFMinL + newSpanL;
+        
+        const minL = Math.log2(20), maxL = Math.log2(20000);
+        if (newFMinL < minL) { newFMaxL += (minL - newFMinL); newFMinL = minL; }
+        if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
+        
+        this.freqMin = Math.pow(2, newFMinL);
+        this.freqMax = Math.pow(2, newFMaxL);
+
+      } else {
+        // 通常ホイール = X軸（時間）ズーム
+        const t = this._xToTime(e.offsetX, ui.width);
+        const span = this.viewEnd - this.viewStart;
+        const newSpan = Math.max(0.05, Math.min(this.analysis ? this.analysis.duration : 60, span * scale));
+        
+        this.viewStart = Math.max(0, t - (t - this.viewStart) / span * newSpan);
+        this.viewEnd = this.viewStart + newSpan;
+        if (this.analysis && this.viewEnd > this.analysis.duration) this.viewEnd = this.analysis.duration;
+      }
       this.renderAll();
     }, { passive: false });
   }
@@ -254,7 +406,6 @@ class SpectralRenderer {
     let freq = this._yToFreq(y, H);
 
     if (this.isSnapMode) {
-      // スナップ: 12平均律の周波数に吸着
       const midi = 69 + 12 * Math.log2(freq / 440);
       freq = 440 * Math.pow(2, (Math.round(midi) - 69) / 12);
     }
@@ -270,9 +421,7 @@ class SpectralRenderer {
     this._drawUI();
   }
 
-  // -----------------------------------------------------------------------
-  // Coordinates & Colors
-  // -----------------------------------------------------------------------
+  // Helpers
   _freqToY(f, H) { const lm = Math.log2(this.freqMin), lM = Math.log2(this.freqMax); return H - (Math.log2(Math.max(f, this.freqMin)) - lm) / (lM - lm) * H; }
   _yToFreq(y, H) { const lm = Math.log2(this.freqMin), lM = Math.log2(this.freqMax); return Math.pow(2, lm + (1 - y / H) * (lM - lm)); }
   _timeToX(t, W) { return (t - this.viewStart) / (this.viewEnd - this.viewStart) * W; }

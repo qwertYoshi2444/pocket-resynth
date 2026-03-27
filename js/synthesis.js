@@ -12,17 +12,20 @@ class AdditiveSynthesizer {
    * @param {object}   analysis
    * @param {Function} pitchMap  (frameIdx, origFreq) → ratio
    * @param {number}   speed     1.0 = normal, 0.0 = freeze
+   * @param {number}   startSec  生成を開始する秒数
    */
-  async synthesize(analysis, pitchMap, speed = 1.0, onProgress) {
+  async synthesize(analysis, pitchMap, speed = 1.0, startSec = 0, onProgress) {
     const { partials, numFrames, hopSize, sampleRate } = analysis;
+    const startFrame = Math.max(0, Math.min(numFrames - 1, Math.round(startSec * sampleRate / hopSize)));
 
-    // 0.0倍の時はフリーズ処理に移行
     if (speed <= 0.001) {
-      return this._synthesizeFreeze(analysis, pitchMap, onProgress);
+      return this._synthesizeFreeze(analysis, pitchMap, startFrame, onProgress);
     }
 
-    // 出力用のフレーム数を計算（Time-Stretch）
-    const outFrames = Math.floor(numFrames / speed);
+    const framesToProcess = numFrames - startFrame;
+    if (framesToProcess <= 0) return new Float64Array(0);
+
+    const outFrames = Math.floor(framesToProcess / speed);
     const totalSamples = (outFrames + 4) * hopSize;
     const out = new Float64Array(totalSamples);
 
@@ -43,15 +46,24 @@ class AdditiveSynthesizer {
 
       for (let j = 0; j < segs.length - 1; j++) {
         const s1 = segs[j], s2 = segs[j + 1];
+
+        // startFrameより前のセグメントは位相だけ進めてスキップ
+        if (s2.fi < startFrame) {
+          const f1 = s1.freq, f2 = s2.freq;
+          const durSamples = s2.fi - s1.fi;
+          const avgF = (f1 + f2) * 0.5;
+          phase += twoPi * avgF / sampleRate * durSamples * hopSize;
+          phase = wrapPhase(phase);
+          continue;
+        }
+
         const r1 = pitchMap ? pitchMap(s1.fi, s1.freq) : 1.0;
         const r2 = pitchMap ? pitchMap(s2.fi, s2.freq) : 1.0;
-
         const f1 = Math.min(s1.freq * r1, nyq);
         const f2 = Math.min(s2.freq * r2, nyq);
         const a1 = s1.amp;
         const a2 = s2.amp;
 
-        // セグメント間の時間をspeedで伸縮
         const frameSpan = (s2.fi - s1.fi) / speed;
         const durSamples = Math.floor(frameSpan * hopSize);
         if (durSamples <= 0) continue;
@@ -62,7 +74,9 @@ class AdditiveSynthesizer {
           continue;
         }
 
-        const baseIdx = Math.floor(s1.fi / speed * hopSize);
+        // 開始位置を 0 とするオフセット計算
+        const relativeFrame = s1.fi - startFrame;
+        const baseIdx = Math.max(0, Math.floor(relativeFrame / speed * hopSize));
         const invD = 1.0 / durSamples;
         const sr = sampleRate;
 
@@ -76,7 +90,7 @@ class AdditiveSynthesizer {
           if (phase < -Math.PI) phase += twoPi;
           
           const idx = baseIdx + s;
-          if (idx < out.length) out[idx] += amp * Math.sin(phase);
+          if (idx >= 0 && idx < out.length) out[idx] += amp * Math.sin(phase);
         }
       }
     }
@@ -87,21 +101,17 @@ class AdditiveSynthesizer {
   }
 
   /**
-   * フリーズループ処理（解析結果の中心フレームのスペクトルを使って10秒間純粋に伸ばす）
+   * targetFrameのスペクトルを抽出し、10秒間の無限ループを生成する
    */
-  async _synthesizeFreeze(analysis, pitchMap, onProgress) {
-    const { partials, sampleRate, numFrames } = analysis;
-    const durSec = 10.0; // 10秒間のWAVを生成
+  async _synthesizeFreeze(analysis, pitchMap, targetFrame, onProgress) {
+    const { partials, sampleRate } = analysis;
+    const durSec = 10.0; 
     const totalSamples = durSec * sampleRate;
     const out = new Float64Array(totalSamples);
     
-    // 解析結果の中央のフレームをフリーズ対象として選定
-    const targetFi = Math.floor(numFrames / 2);
-
     const active = [];
     for (const p of partials) {
-      // ターゲット周辺に存在する倍音成分を抽出
-      const seg = p.segs.find(s => Math.abs(s.fi - targetFi) <= 2);
+      const seg = p.segs.find(s => Math.abs(s.fi - targetFrame) <= 2);
       if (seg && seg.amp > 1e-4) active.push(seg);
     }
 

@@ -37,10 +37,9 @@ class SpectralAnalyzer {
     const spectrogram  = [];
     const BATCH        = 64;
 
-    // ---- Pass 1: STFT frame analysis ----
     for (let fi = 0; fi < numFrames; fi++) {
       if (fi % BATCH === 0) {
-        if (onProgress) onProgress(fi / numFrames * 0.5); // STFT pass (50%)
+        if (onProgress) onProgress(fi / numFrames * 0.5);
         await yieldToUI();
       }
 
@@ -67,48 +66,30 @@ class SpectralAnalyzer {
       frames.push({ fi, time, peaks });
     }
 
-    // ---- Pass 2: Partial tracking ----
     const partials = await this._trackPartials(frames, numFrames, p => {
-      if (onProgress) onProgress(0.5 + p * 0.45); // Tracking pass (45%)
+      if (onProgress) onProgress(0.5 + p * 0.45);
     });
 
-    // ---- Pass 3: F0 Estimation (New for Vocal Mode) ----
     const f0Data = this._estimateF0(partials, numFrames);
 
     if (onProgress) onProgress(1.0);
 
     return {
-      sampleRate: sr,
-      fftSize:    N,
-      hopSize:    hop,
-      numFrames,
-      duration:   numFrames * hop / sr,
-      frames,
-      partials,
-      spectrogram,
-      spectFreqs: this._spectFreqs,
-      f0Data,  // 追加: フレームごとの基本周波数 (Float32Array)
+      sampleRate: sr, fftSize: N, hopSize: hop, numFrames, duration: numFrames * hop / sr,
+      frames, partials, spectrogram, spectFreqs: this._spectFreqs, f0Data
     };
   }
 
-  // -----------------------------------------------------------------------
-  // New: F0 (Pitch) Estimation
-  // -----------------------------------------------------------------------
   _estimateF0(partials, numFrames) {
     const f0 = new Float32Array(numFrames);
     const activeAt = Array.from({ length: numFrames }, () => []);
     
-    // 存在する全partialのセグメントをフレームごとにまとめる
-    for (const p of partials) {
-      for (const s of p.segs) activeAt[s.fi].push(s);
-    }
+    for (const p of partials) for (const s of p.segs) activeAt[s.fi].push(s);
     
-    // 各フレームでボーカル帯域の基音を探す
     for (let fi = 0; fi < numFrames; fi++) {
       const active = activeAt[fi];
       if (active.length === 0) continue;
       
-      // 振幅が大きい上位成分を抽出し、60〜1200Hzの範囲で最も低いものをF0とする
       active.sort((a, b) => b.amp - a.amp);
       const tops = active.slice(0, 10).filter(s => s.freq > 60 && s.freq < 1200);
       
@@ -118,7 +99,6 @@ class SpectralAnalyzer {
       }
     }
     
-    // メディアンフィルタで突発的な誤検出（スパイク）を除去
     const smooth = new Float32Array(numFrames);
     for (let i = 2; i < numFrames - 2; i++) {
       const w = [f0[i-2], f0[i-1], f0[i], f0[i+1], f0[i+2]].sort((a, b) => a - b);
@@ -132,9 +112,6 @@ class SpectralAnalyzer {
     return smooth;
   }
 
-  // -----------------------------------------------------------------------
-  // Peak Detection (Existing)
-  // -----------------------------------------------------------------------
   _detectPeaks(real, imag) {
     const halfN = this.fftSize >> 1, sr = this.sampleRate, N = this.fftSize;
     const peaks = [];
@@ -175,9 +152,6 @@ class SpectralAnalyzer {
     return peaks.slice(0, this.maxPartials);
   }
 
-  // -----------------------------------------------------------------------
-  // Partial Tracking (Existing)
-  // -----------------------------------------------------------------------
   async _trackPartials(frames, numFrames, onProgress) {
     const completed = [];
     const active = new Map();

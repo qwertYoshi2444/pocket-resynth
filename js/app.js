@@ -10,25 +10,23 @@ class HarmorApp {
     this.synth    = null;
     this.renderer = null;
 
-    this.audioData   = null;   // Float32Array mono
+    this.audioData   = null;
     this.sampleRate  = 44100;
     this.analysis    = null;
-    this.synthData   = null;   // Float64Array (Single preview)
+    this.synthData   = null;
 
-    // State
-    this.mode = 'synth'; // 'synth' | 'vocal'
+    // States
+    this.mode = 'synth';
     this.globalSemitones = 0;
     this.playbackSpeed = 1.0;
-    this.synthBuffersMap = new Map(); // For piano roll: note(midi) -> Float64Array
+    this.startTime = 0; // 再生・フリーズの開始位置(秒)
+    this.synthBuffersMap = new Map(); // MIDI note -> Float64Array
 
     this._initRenderer();
     this._buildPianoRoll();
     this._bindUI();
   }
 
-  // -----------------------------------------------------------------------
-  // Init & UI Binding
-  // -----------------------------------------------------------------------
   _initRenderer() {
     this.renderer = new SpectralRenderer({
       spectrogramCanvas: $('spectrogramCanvas'),
@@ -36,6 +34,11 @@ class HarmorApp {
       uiCanvas:          $('uiCanvas'),
       waveformCanvas:    $('waveformCanvas'),
     });
+
+    // 描画エンジンでクリックされた際に開始時間を更新
+    this.renderer.onSetStartTime = (t) => {
+      this.startTime = t;
+    };
 
     this.audio.onTimeUpdate = (t) => {
       this.renderer.setPlayhead(t);
@@ -48,55 +51,43 @@ class HarmorApp {
   }
 
   _bindUI() {
-    // File
     const fi = $('fileInput');
     $('loadBtn').addEventListener('click', () => fi.click());
     fi.addEventListener('change', e => { if (e.target.files[0]) this._loadFile(e.target.files[0]); });
 
-    // Mode Tabs
     $('tabSynth').addEventListener('click', () => this._switchMode('synth'));
     $('tabVocal').addEventListener('click', () => this._switchMode('vocal'));
 
-    // Analysis
     $('analyzeBtn').addEventListener('click', () => this._analyze());
 
-    // Controls
-    this._bindSlider('pitchSlider', 'pitchValue', v => {
-      this.globalSemitones = v;
-    }, st => st >= 0 ? `+${st.toFixed(1)} st` : `${st.toFixed(1)} st`);
+    this._bindSlider('pitchSlider', 'pitchValue', v => { this.globalSemitones = v; }, st => st >= 0 ? `+${st.toFixed(1)} st` : `${st.toFixed(1)} st`);
+    this._bindSlider('speedSlider', 'speedValue', v => { this.playbackSpeed = v; }, v => `${v.toFixed(2)}x`);
 
-    this._bindSlider('speedSlider', 'speedValue', v => {
-      this.playbackSpeed = v;
-    }, v => `${v.toFixed(2)}x`);
-
-    // Vocal overrides
     $('snapCheck').addEventListener('change', e => { this.renderer.isSnapMode = e.target.checked; });
-    $('showOrigF0Check').addEventListener('change', e => { 
-      this.renderer.showOrigF0 = e.target.checked; 
-      this.renderer.renderAll(); 
-    });
-    $('resetF0Btn').addEventListener('click', () => {
-      this.renderer.editedF0 = null;
-      this.renderer.renderAll();
-    });
+    $('showOrigF0Check').addEventListener('change', e => { this.renderer.showOrigF0 = e.target.checked; this.renderer.renderAll(); });
+    $('resetF0Btn').addEventListener('click', () => { this.renderer.editedF0 = null; this.renderer.renderAll(); });
 
-    // Synthesize & Export
     $('synthesizeBtn').addEventListener('click', () => this._synthesize());
     $('exportZipBtn').addEventListener('click', () => this._exportZip());
 
-    // Transport
     $('playOrigBtn').addEventListener('click', () => {
-      this.audio.play('orig');
+      // オリジナルは元波形そのままなので、startTimeから再生
+      this.audio.play('orig', this.startTime, this.startTime);
       $('playOrigBtn').classList.add('active'); $('playSynthBtn').classList.remove('active');
     });
     $('playSynthBtn').addEventListener('click', () => {
       if (!this.synthData) return;
-      this.audio.play('synth');
+      // SynthDataは startTime 以降のみ生成されているため、バッファ先頭(0秒)から再生。
+      // ただしUI上のプレイヘッドは startTime から進める。
+      this.audio.play('synth', 0, this.startTime);
       $('playSynthBtn').classList.add('active'); $('playOrigBtn').classList.remove('active');
     });
     $('stopBtn').addEventListener('click', () => {
       this.audio.stop();
       $('playOrigBtn').classList.remove('active'); $('playSynthBtn').classList.remove('active');
+      // 再生停止時、プレイヘッドを開始位置へ戻す
+      this.renderer.setPlayhead(this.startTime);
+      $('timeDisplay').textContent = formatTime(this.startTime);
     });
 
     $('exportBtn').addEventListener('click', () => {
@@ -106,7 +97,6 @@ class HarmorApp {
       }
     });
 
-    // Resize handling
     window.addEventListener('resize', () => this._resizeCanvases());
     this._resizeCanvases();
   }
@@ -129,16 +119,12 @@ class HarmorApp {
     if (this.analysis) this.renderer.renderAll();
   }
 
-  // -----------------------------------------------------------------------
-  // File & Analysis
-  // -----------------------------------------------------------------------
   async _loadFile(file) {
     this._status('読み込み中…', 'info');
     try {
       const decoded = await this.audio.loadFile(file);
       this.sampleRate = decoded.sampleRate;
 
-      // 正しいモノラルダウンミックス処理
       const nCh = decoded.numberOfChannels;
       const len = decoded.length;
       this.audioData = new Float32Array(len);
@@ -150,8 +136,8 @@ class HarmorApp {
       $('fileInfo').textContent = `${file.name} | ${decoded.duration.toFixed(2)}s | ${this.sampleRate}Hz`;
 
       this.renderer.audioData = this.audioData;
-      this.renderer.analysis  = { sampleRate: this.sampleRate, duration: decoded.duration };
-      this.renderer.viewEnd   = decoded.duration;
+      this.renderer.setAnalysis(null, this.audioData);
+      this.renderer.viewEnd = decoded.duration;
       this.renderer._drawWaveform();
 
       $('analyzeBtn').disabled = false;
@@ -179,9 +165,8 @@ class HarmorApp {
       this.analysis = await this.analyzer.analyze(this.audioData, p => this._progress(p));
       this.synth = new AdditiveSynthesizer(this.sampleRate, this.analysis.hopSize);
 
-      // Renderer連携
       this.renderer.setAnalysis(this.analysis, this.audioData);
-      this.renderer.f0Data = this.analysis.f0Data; // 推定F0を渡す
+      this.renderer.f0Data = this.analysis.f0Data;
       this.renderer.editedF0 = null;
 
       $('partialCountBadge').textContent = `${this.analysis.partials.length} partials`;
@@ -195,21 +180,16 @@ class HarmorApp {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Resynthesis (Preview + Multi-sample batch)
-  // -----------------------------------------------------------------------
   async _synthesize() {
     if (!this.analysis) return;
     $('synthesizeBtn').disabled = true;
-    this._status('メインプレビュー生成中…', 'info');
+    this._status('プレビュー生成中…', 'info');
     this._progress(0);
 
-    // 歌わせモードのピッチカーブを統合する PitchMap 生成関数
     const getPitchMap = (baseSemitones) => {
       const baseRatio = Math.pow(2, baseSemitones / 12);
       return (fi, freq) => {
         let r = baseRatio;
-        // Vocalモードで、ユーザー上書きF0が存在し、元のF0が存在するフレームなら比率を適用
         if (this.mode === 'vocal' && this.renderer.editedF0 && this.analysis.f0Data[fi] > 0) {
           const edited = this.renderer.editedF0[fi];
           if (edited > 0) r *= (edited / this.analysis.f0Data[fi]);
@@ -219,28 +199,27 @@ class HarmorApp {
     };
 
     try {
-      // 1. メインのプレビュー波形を合成
+      // メインの波形を合成（startTime以降を生成）
       const speed = this.mode === 'synth' ? this.playbackSpeed : 1.0;
       this.synthData = await this.synth.synthesize(
-        this.analysis, getPitchMap(this.globalSemitones), speed, p => this._progress(p)
+        this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, p => this._progress(p)
       );
 
       this.audio.setSynthData(this.synthData, this.sampleRate);
       $('playSynthBtn').disabled = false;
       $('exportBtn').disabled = false;
 
-      // 2. シンセ作成モードなら 24音(C3〜B4) のバッチ自動生成を走らせる
+      // シンセ作成モードなら 3オクターブ分 (C3(48) 〜 B5(83) = 計36音) のバッチ生成
       if (this.mode === 'synth') {
-        this._status('マルチサンプル自動生成中 (C3 - B4)…', 'info');
+        this._status('マルチサンプル自動生成中 (C3 - B5)…', 'info');
         this.synthBuffersMap.clear();
         
-        // RootをC4(Midi 60)とする。C3(48)〜B4(71)の24音
-        for (let note = 48; note <= 71; note++) {
-          const stShift = (note - 60) + this.globalSemitones;
+        for (let note = 48; note <= 83; note++) {
+          const stShift = (note - 60) + this.globalSemitones; // C4(60)が基準
           const map = getPitchMap(stShift);
-          const data = await this.synth.synthesize(this.analysis, map, speed, null); // バックグラウンド
+          const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, null);
           this.synthBuffersMap.set(note, data);
-          this._progress((note - 48) / 24);
+          this._progress((note - 48) / 36);
         }
 
         $('pianoRoll').style.display = 'flex';
@@ -257,29 +236,39 @@ class HarmorApp {
   }
 
   // -----------------------------------------------------------------------
-  // Piano Roll & ZIP Export
+  // Piano Roll (C3 ~ B5) 
   // -----------------------------------------------------------------------
   _buildPianoRoll() {
     const pr = $('pianoRoll');
+    pr.innerHTML = ''; // クリア
     const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
     
-    // C3(48) to B4(71)
-    for(let n = 48; n <= 71; n++) {
+    // C3(48) to B5(83) = 36 keys
+    for(let n = 48; n <= 83; n++) {
       const isBlack = [1,3,6,8,10].includes(n % 12);
       const key = document.createElement('div');
       key.className = `pr-key ${isBlack ? 'black' : 'white'}`;
       
-      // 白鍵のみラベル表示 (例: C3)
       key.textContent = isBlack ? '' : noteNames[n % 12] + (Math.floor(n / 12) - 1);
       
       key.addEventListener('mousedown', () => {
         if (!this.synthBuffersMap.has(n)) return;
         key.classList.add('playing');
         this.audio.setSynthData(this.synthBuffersMap.get(n), this.sampleRate);
-        this.audio.play('synth'); // 即時試聴
+        this.audio.play('synth', 0, this.startTime); // 押している間だけ再生
       });
-      key.addEventListener('mouseup', () => key.classList.remove('playing'));
-      key.addEventListener('mouseleave', () => key.classList.remove('playing'));
+      
+      // 指を離す or カーソルが外れたら即座に音を停止
+      key.addEventListener('mouseup', () => {
+        key.classList.remove('playing');
+        this.audio.stop();
+      });
+      key.addEventListener('mouseleave', () => {
+        if (key.classList.contains('playing')) {
+          key.classList.remove('playing');
+          this.audio.stop();
+        }
+      });
       pr.appendChild(key);
     }
   }
@@ -289,7 +278,6 @@ class HarmorApp {
     this._status('ZIPファイル作成中…', 'info');
     $('exportZipBtn').disabled = true;
 
-    // 非同期回避のためsetTimeout
     setTimeout(() => {
       try {
         const zip = new SimpleZip();
@@ -312,9 +300,6 @@ class HarmorApp {
     }, 50);
   }
 
-  // -----------------------------------------------------------------------
-  // UI Helpers
-  // -----------------------------------------------------------------------
   _resizeCanvases() {
     const cvIds = ['spectrogramCanvas','partialCanvas','uiCanvas'];
     const wrap  = $('spectrogramWrapper');
