@@ -30,7 +30,6 @@
       <input type="file" id="fileInput" accept="audio/*" hidden>
     </div>
 
-    <!-- 解析パラメータは維持 -->
     <div class="toolbar-group">
       <span class="toolbar-label">FFT:</span>
       <select id="fftSizeSelect">
@@ -67,7 +66,8 @@
       </div>
 
       <!-- Spectrogram + Partials + UI overlay -->
-      <div id="spectrogramWrapper">
+      <!-- 右クリック時のコンテキストメニューを無効化（パンニング操作のため） -->
+      <div id="spectrogramWrapper" oncontextmenu="return false;">
         <canvas id="spectrogramCanvas"></canvas>
         <canvas id="partialCanvas"></canvas>
         <canvas id="uiCanvas"></canvas>
@@ -103,16 +103,16 @@
             <input type="range" id="speedSlider" min="0" max="2" step="0.05" value="1">
           </div>
           <div style="font-size:10px;color:#8b949e;margin-top:4px;line-height:1.4">
-            0.0倍にすると、解析結果の最大エネルギー地点のスペクトルをフリーズし、10秒間の無限ループ波形を生成します。
+            0.0倍にすると、スペクトログラム上でクリック指定した位置の波形をフリーズし、10秒間の無限ループを生成します。
           </div>
         </div>
         <div class="panel-section" style="flex:1">
           <h3>Multi-sample Export</h3>
           <p class="hint" style="margin-bottom:10px;line-height:1.4">
-            再合成を実行すると、現在の設定を元に 2オクターブ分 (C3〜B4) の波形を自動生成します。<br>
-            生成完了後、下のピアノロールで試聴できます。
+            再合成を実行すると 3オクターブ分 (C3〜B5) の波形を自動生成します。<br>
+            生成完了後、下のピアノロールを押して試聴できます。
           </p>
-          <button id="exportZipBtn" disabled style="width:100%;font-size:11px">📦 24音を ZIP でダウンロード</button>
+          <button id="exportZipBtn" disabled style="width:100%;font-size:11px">📦 36音を ZIP でダウンロード</button>
         </div>
       </div>
 
@@ -129,8 +129,10 @@
           <button id="resetF0Btn" style="width:100%;font-size:11px">描画リセット</button>
           
           <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
-            <div>🖱 スペクトログラム上をドラッグして<br>ピッチカーブ(赤太線)を描画。</div>
-            <div style="margin-top:4px">※解析時にボーカル等の単音を想定した基本周波数(F0)を自動推定します。</div>
+            <div>🖱 左ドラッグ: ピッチカーブ描画</div>
+            <div>🖱 右ドラッグ / 中ドラッグ: 画面移動(パン)</div>
+            <div>🖱 ホイール: 時間軸ズーム</div>
+            <div>🖱 Shift+ホイール: 周波数軸ズーム</div>
           </div>
         </div>
       </div>
@@ -145,6 +147,7 @@
     <button id="playSynthBtn" disabled>▶ Synth</button>
     <button id="stopBtn">■ Stop</button>
     <div class="transport-sep"></div>
+    <span style="font-size:11px;color:#8b949e;margin-right:auto">スペクトログラムをクリックして開始位置を設定できます</span>
     <button id="exportBtn" disabled>💾 単一 WAV Export</button>
   </div>
 
