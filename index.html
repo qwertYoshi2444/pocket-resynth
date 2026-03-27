@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Harmor Web — Spectral Resynthesis Engine</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ────────────────────────────────────────────────────── -->
+  <header id="header">
+    <h1>Harmor Web</h1>
+    <span class="subtitle">Spectral Additive Engine</span>
+    
+    <!-- モード切替タブ -->
+    <div id="modeTabs">
+      <button id="tabSynth" class="tab-btn active">🎹 シンセ作成モード</button>
+      <button id="tabVocal" class="tab-btn">🎤 歌わせモード</button>
+    </div>
+
+    <span id="fileInfo">— ファイル未読み込み —</span>
+  </header>
+
+  <!-- ── Toolbar ───────────────────────────────────────────────────── -->
+  <div id="toolbar">
+    <div class="toolbar-group">
+      <button id="loadBtn" class="btn-primary">📂 Load Audio</button>
+      <input type="file" id="fileInput" accept="audio/*" hidden>
+    </div>
+
+    <!-- 解析パラメータは維持 -->
+    <div class="toolbar-group">
+      <span class="toolbar-label">FFT:</span>
+      <select id="fftSizeSelect">
+        <option value="1024">1024</option>
+        <option value="2048">2048</option>
+        <option value="4096" selected>4096</option>
+        <option value="8192">8192</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <span class="toolbar-label">Max Partials:</span>
+      <input type="number" id="maxPartialsInput" value="200" min="10" max="1000" style="width:64px">
+    </div>
+    <div class="toolbar-group">
+      <span class="toolbar-label">Thresh (dB):</span>
+      <input type="number" id="threshInput" value="-70" min="-100" max="-20" style="width:56px">
+    </div>
+
+    <button id="analyzeBtn" disabled>🔬 解析</button>
+    <span id="partialCountBadge">— partials</span>
+
+    <button id="synthesizeBtn" disabled class="btn-primary" style="margin-left:auto">⚡ 再合成</button>
+  </div>
+
+  <!-- ── Main ──────────────────────────────────────────────────────── -->
+  <div id="mainContent">
+    <div id="canvasArea">
+      <!-- Waveform -->
+      <div id="waveformWrapper">
+        <canvas id="waveformCanvas"></canvas>
+        <div id="dropZone">
+          <span style="color:#8b949e;pointer-events:none">ここにファイルをドロップ</span>
+        </div>
+      </div>
+
+      <!-- Spectrogram + Partials + UI overlay -->
+      <div id="spectrogramWrapper">
+        <canvas id="spectrogramCanvas"></canvas>
+        <canvas id="partialCanvas"></canvas>
+        <canvas id="uiCanvas"></canvas>
+      </div>
+
+      <!-- ピアノロール (Synthモード専用) -->
+      <div id="pianoRoll" style="display:none;"></div>
+    </div>
+
+    <!-- Control Panel -->
+    <aside id="controlPanel">
+      <!-- 共通: Global Pitch -->
+      <div class="panel-section">
+        <h3>Global Pitch Shift</h3>
+        <div class="slider-block">
+          <div class="slider-header">
+            <span class="label">Semitones</span>
+            <span class="value" id="pitchValue">+0.0 st</span>
+          </div>
+          <input type="range" id="pitchSlider" min="-24" max="24" step="0.1" value="0">
+        </div>
+      </div>
+
+      <!-- シンセ作成モード専用パネル -->
+      <div id="panelSynth" class="panel-mode-group">
+        <div class="panel-section">
+          <h3>Playback Speed (Time-Stretch)</h3>
+          <div class="slider-block">
+            <div class="slider-header">
+              <span class="label">Speed</span>
+              <span class="value" id="speedValue">1.00x</span>
+            </div>
+            <input type="range" id="speedSlider" min="0" max="2" step="0.05" value="1">
+          </div>
+          <div style="font-size:10px;color:#8b949e;margin-top:4px;line-height:1.4">
+            0.0倍にすると、解析結果の最大エネルギー地点のスペクトルをフリーズし、10秒間の無限ループ波形を生成します。
+          </div>
+        </div>
+        <div class="panel-section" style="flex:1">
+          <h3>Multi-sample Export</h3>
+          <p class="hint" style="margin-bottom:10px;line-height:1.4">
+            再合成を実行すると、現在の設定を元に 2オクターブ分 (C3〜B4) の波形を自動生成します。<br>
+            生成完了後、下のピアノロールで試聴できます。
+          </p>
+          <button id="exportZipBtn" disabled style="width:100%;font-size:11px">📦 24音を ZIP でダウンロード</button>
+        </div>
+      </div>
+
+      <!-- 歌わせモード専用パネル -->
+      <div id="panelVocal" class="panel-mode-group" style="display:none;">
+        <div class="panel-section" style="flex:1">
+          <h3>Pitch Curve Editor</h3>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12px;color:#e6edf3;cursor:pointer">
+            <input type="checkbox" id="snapCheck" checked> 12音スナップ (半音吸着)
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:12px;color:#e6edf3;cursor:pointer">
+            <input type="checkbox" id="showOrigF0Check" checked> 推定ピッチカーブ(青破線)を表示
+          </label>
+          <button id="resetF0Btn" style="width:100%;font-size:11px">描画リセット</button>
+          
+          <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
+            <div>🖱 スペクトログラム上をドラッグして<br>ピッチカーブ(赤太線)を描画。</div>
+            <div style="margin-top:4px">※解析時にボーカル等の単音を想定した基本周波数(F0)を自動推定します。</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ── Transport ─────────────────────────────────────────────────── -->
+  <div id="transport">
+    <span id="timeDisplay">0:00.00</span>
+    <div class="transport-sep"></div>
+    <button id="playOrigBtn" disabled>▶ Original</button>
+    <button id="playSynthBtn" disabled>▶ Synth</button>
+    <button id="stopBtn">■ Stop</button>
+    <div class="transport-sep"></div>
+    <button id="exportBtn" disabled>💾 単一 WAV Export</button>
+  </div>
+
+  <!-- ── Status bar ────────────────────────────────────────────────── -->
+  <div id="statusBar">
+    <span class="status-msg info" id="statusMsg">Ready — 音声ファイルを読み込んでください</span>
+    <progress id="progressBar" max="1" value="0"></progress>
+  </div>
+
+</div>
+
+<!-- Scripts -->
+<script src="js/fft.js"></script>
+<script src="js/analysis.js"></script>
+<script src="js/synthesis.js"></script>
+<script src="js/renderer.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/export.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
