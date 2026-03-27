@@ -19,8 +19,11 @@ class HarmorApp {
     this.mode = 'synth';
     this.globalSemitones = 0;
     this.playbackSpeed = 1.0;
-    this.startTime = 0; // 再生・フリーズの開始位置(秒)
-    this.synthBuffersMap = new Map(); // MIDI note -> Float64Array
+    this.startTime = 0; 
+    this.synthBuffersMap = new Map(); 
+
+    // ADSR State
+    this.adsr = { a: 10, d: 500, s: 100, r: 300 };
 
     this._initRenderer();
     this._buildPianoRoll();
@@ -35,9 +38,13 @@ class HarmorApp {
       waveformCanvas:    $('waveformCanvas'),
     });
 
-    // 描画エンジンでクリックされた際に開始時間を更新
     this.renderer.onSetStartTime = (t) => {
       this.startTime = t;
+    };
+
+    // マウス操作でキャンバスの視点が変わったらスライダーを追従させる
+    this.renderer.onViewChange = () => {
+      this._updateScrollSlidersFromRenderer();
     };
 
     this.audio.onTimeUpdate = (t) => {
@@ -51,6 +58,7 @@ class HarmorApp {
   }
 
   _bindUI() {
+    // ---- File / Tabs / Core ----
     const fi = $('fileInput');
     $('loadBtn').addEventListener('click', () => fi.click());
     fi.addEventListener('change', e => { if (e.target.files[0]) this._loadFile(e.target.files[0]); });
@@ -60,13 +68,43 @@ class HarmorApp {
 
     $('analyzeBtn').addEventListener('click', () => this._analyze());
 
+    // ---- Panel Toggle ----
+    $('panelToggleBtn').addEventListener('click', () => {
+      $('controlPanel').classList.toggle('collapsed');
+      $('panelToggleBtn').classList.toggle('collapsed');
+      setTimeout(() => this._resizeCanvases(), 300); // Transition完了後にリサイズ
+    });
+
+    // ---- Sliders (Pitch, Speed) ----
     this._bindSlider('pitchSlider', 'pitchValue', v => { this.globalSemitones = v; }, st => st >= 0 ? `+${st.toFixed(1)} st` : `${st.toFixed(1)} st`);
     this._bindSlider('speedSlider', 'speedValue', v => { this.playbackSpeed = v; }, v => `${v.toFixed(2)}x`);
 
+    // ---- ADSR Envelope Sync ----
+    const bindADSR = (key, sliderId, numId) => {
+      const sl = $(sliderId), num = $(numId);
+      const update = (val) => {
+        let v = parseInt(val);
+        if(isNaN(v)) return;
+        this.adsr[key] = v;
+        sl.value = v; num.value = v;
+      };
+      sl.addEventListener('input', e => update(e.target.value));
+      num.addEventListener('change', e => update(e.target.value));
+    };
+    bindADSR('a', 'adsrASlider', 'adsrANum');
+    bindADSR('d', 'adsrDSlider', 'adsrDNum');
+    bindADSR('s', 'adsrSSlider', 'adsrSNum');
+    bindADSR('r', 'adsrRSlider', 'adsrRNum');
+
+    // ---- XY Scroll & Zoom Controls ----
+    this._bindScrollControls();
+
+    // ---- Vocal mode overrides ----
     $('snapCheck').addEventListener('change', e => { this.renderer.isSnapMode = e.target.checked; });
     $('showOrigF0Check').addEventListener('change', e => { this.renderer.showOrigF0 = e.target.checked; this.renderer.renderAll(); });
     $('resetF0Btn').addEventListener('click', () => { this.renderer.editedF0 = null; this.renderer.renderAll(); });
 
+    // ---- Transport / Export ----
     $('synthesizeBtn').addEventListener('click', () => this._synthesize());
     $('exportZipBtn').addEventListener('click', () => this._exportZip());
 
@@ -97,6 +135,90 @@ class HarmorApp {
     this._resizeCanvases();
   }
 
+  // --- Scroll & Zoom Controls Logic ---
+  _bindScrollControls() {
+    const sX = $('sliderPanX'), sY = $('sliderPanY');
+
+    // X軸パン
+    sX.addEventListener('input', () => {
+      if (!this.analysis) return;
+      const maxT = this.analysis.duration;
+      const span = this.renderer.viewEnd - this.renderer.viewStart;
+      const pct = parseFloat(sX.value) / 1000.0;
+      let vs = pct * (maxT - span);
+      this.renderer.setView(vs, vs + span, this.renderer.freqMin, this.renderer.freqMax);
+    });
+
+    // Y軸パン (Logスケール)
+    sY.addEventListener('input', () => {
+      const minL = Math.log2(20), maxL = Math.log2(20000);
+      const spanL = Math.log2(this.renderer.freqMax) - Math.log2(this.renderer.freqMin);
+      
+      const pct = parseFloat(sY.value) / 1000.0; // 上が1000, 下が0
+      let fm = minL + pct * (maxL - minL - spanL);
+      this.renderer.setView(this.renderer.viewStart, this.renderer.viewEnd, Math.pow(2, fm), Math.pow(2, fm + spanL));
+    });
+
+    // Zoom Buttons
+    const zoomX = (scale) => {
+      if (!this.analysis) return;
+      const span = this.renderer.viewEnd - this.renderer.viewStart;
+      const center = this.renderer.viewStart + span / 2;
+      const newSpan = Math.max(0.05, Math.min(this.analysis.duration, span * scale));
+      let vs = center - newSpan / 2;
+      let ve = center + newSpan / 2;
+      if (vs < 0) { ve -= vs; vs = 0; }
+      if (ve > this.analysis.duration) { vs -= (ve - this.analysis.duration); ve = this.analysis.duration; }
+      this.renderer.setView(Math.max(0, vs), Math.min(this.analysis.duration, ve), this.renderer.freqMin, this.renderer.freqMax);
+      this._updateScrollSlidersFromRenderer();
+    };
+
+    const zoomY = (scale) => {
+      const minL = Math.log2(20), maxL = Math.log2(20000);
+      const spanL = Math.log2(this.renderer.freqMax) - Math.log2(this.renderer.freqMin);
+      const centerL = Math.log2(this.renderer.freqMin) + spanL / 2;
+      
+      const newSpanL = Math.max(this.renderer.minFreqZoomRangeL, Math.min(maxL - minL, spanL * scale));
+      let vmL = centerL - newSpanL / 2;
+      let vxL = centerL + newSpanL / 2;
+      if (vmL < minL) { vxL += (minL - vmL); vmL = minL; }
+      if (vxL > maxL) { vmL -= (vxL - maxL); vxL = maxL; }
+      
+      this.renderer.setView(this.renderer.viewStart, this.renderer.viewEnd, Math.pow(2, vmL), Math.pow(2, vxL));
+      this._updateScrollSlidersFromRenderer();
+    };
+
+    $('btnZoomInX').addEventListener('click', () => zoomX(0.8));
+    $('btnZoomOutX').addEventListener('click', () => zoomX(1.25));
+    $('btnZoomInY').addEventListener('click', () => zoomY(0.8));
+    $('btnZoomOutY').addEventListener('click', () => zoomY(1.25));
+  }
+
+  _updateScrollSlidersFromRenderer() {
+    if (!this.analysis || !this.renderer) return;
+    
+    // X Axis
+    const maxT = this.analysis.duration;
+    const spanT = this.renderer.viewEnd - this.renderer.viewStart;
+    if (spanT < maxT) {
+      $('sliderPanX').value = (this.renderer.viewStart / (maxT - spanT)) * 1000;
+    } else {
+      $('sliderPanX').value = 0;
+    }
+
+    // Y Axis
+    const minL = Math.log2(20), maxL = Math.log2(20000);
+    const spanL = Math.log2(this.renderer.freqMax) - Math.log2(this.renderer.freqMin);
+    const currL = Math.log2(this.renderer.freqMin);
+    
+    if (spanL < (maxL - minL)) {
+      $('sliderPanY').value = ((currL - minL) / (maxL - minL - spanL)) * 1000;
+    } else {
+      $('sliderPanY').value = 500;
+    }
+  }
+
+  // --- Core Helpers ---
   _bindSlider(id, displayId, onChange, fmt) {
     const sl = $(id), disp = $(displayId);
     const update = () => { const v = parseFloat(sl.value); onChange(v); disp.textContent = fmt(v); };
@@ -131,13 +253,13 @@ class HarmorApp {
 
       $('fileInfo').textContent = `${file.name} | ${decoded.duration.toFixed(2)}s | ${this.sampleRate}Hz`;
 
-      // 修正: null.durationによるエラーを回避するため、解析完了前はダミーのオブジェクトを渡す
       this.renderer.audioData = this.audioData;
       this.renderer.analysis  = { sampleRate: this.sampleRate, duration: decoded.duration };
       this.renderer.viewEnd   = decoded.duration;
       this.renderer.startTime = 0;
       this.startTime = 0;
       this.renderer._drawWaveform();
+      this.renderer._drawWaveformUI();
 
       $('analyzeBtn').disabled = false;
       $('playOrigBtn').disabled = false;
@@ -167,6 +289,8 @@ class HarmorApp {
       this.renderer.setAnalysis(this.analysis, this.audioData);
       this.renderer.f0Data = this.analysis.f0Data;
       this.renderer.editedF0 = null;
+      
+      this._updateScrollSlidersFromRenderer();
 
       $('partialCountBadge').textContent = `${this.analysis.partials.length} partials`;
       $('synthesizeBtn').disabled = false;
@@ -199,8 +323,11 @@ class HarmorApp {
 
     try {
       const speed = this.mode === 'synth' ? this.playbackSpeed : 1.0;
+      // ADSRはシンセモードの時のみ適用
+      const adsrToApply = this.mode === 'synth' ? this.adsr : null;
+
       this.synthData = await this.synth.synthesize(
-        this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, p => this._progress(p)
+        this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, adsrToApply, p => this._progress(p)
       );
 
       this.audio.setSynthData(this.synthData, this.sampleRate);
@@ -215,7 +342,7 @@ class HarmorApp {
         for (let note = 48; note <= 83; note++) {
           const stShift = (note - 60) + this.globalSemitones; // C4(60)が基準
           const map = getPitchMap(stShift);
-          const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, null);
+          const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, adsrToApply, null);
           this.synthBuffersMap.set(note, data);
           this._progress((note - 48) / 36);
         }
@@ -233,9 +360,6 @@ class HarmorApp {
     }
   }
 
-  // -----------------------------------------------------------------------
-  // Piano Roll (C3 ~ B5)
-  // -----------------------------------------------------------------------
   _buildPianoRoll() {
     const pr = $('pianoRoll');
     pr.innerHTML = '';
@@ -245,7 +369,6 @@ class HarmorApp {
       const isBlack = [1,3,6,8,10].includes(n % 12);
       const key = document.createElement('div');
       key.className = `pr-key ${isBlack ? 'black' : 'white'}`;
-      
       key.textContent = isBlack ? '' : noteNames[n % 12] + (Math.floor(n / 12) - 1);
       
       key.addEventListener('mousedown', () => {
@@ -304,9 +427,16 @@ class HarmorApp {
 
     const wv = $('waveformCanvas'), ww = $('waveformWrapper');
     wv.width = ww.clientWidth; wv.height = ww.clientHeight;
+    
+    const uiwv = $('waveformUiCanvas');
+    if (uiwv) { uiwv.width = ww.clientWidth; uiwv.height = ww.clientHeight; }
 
-    if (this.renderer && this.analysis) this.renderer.renderAll();
-    else if (this.renderer && this.audioData) this.renderer._drawWaveform();
+    if (this.renderer && this.analysis) {
+      this.renderer.renderAll();
+    } else if (this.renderer && this.audioData) {
+      this.renderer._drawWaveform();
+      this.renderer._drawWaveformUI();
+    }
   }
 
   _status(msg, level) { const el = $('statusMsg'); el.textContent = msg; el.className = 'status-msg ' + level; }

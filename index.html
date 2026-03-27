@@ -57,25 +57,46 @@
   <!-- ── Main ──────────────────────────────────────────────────────── -->
   <div id="mainContent">
     <div id="canvasArea">
-      <!-- Waveform -->
+      <!-- Waveform (再生位置指定用) -->
       <div id="waveformWrapper">
+        <!-- マウス操作を検知しやすくするため透過のUIキャンバスを追加 -->
         <canvas id="waveformCanvas"></canvas>
+        <canvas id="waveformUiCanvas"></canvas>
         <div id="dropZone">
           <span style="color:#8b949e;pointer-events:none">ここにファイルをドロップ</span>
         </div>
       </div>
 
-      <!-- Spectrogram + Partials + UI overlay -->
-      <!-- 右クリック時のコンテキストメニューを無効化（パンニング操作のため） -->
-      <div id="spectrogramWrapper" oncontextmenu="return false;">
-        <canvas id="spectrogramCanvas"></canvas>
-        <canvas id="partialCanvas"></canvas>
-        <canvas id="uiCanvas"></canvas>
+      <!-- Spectrogram + XY Scroll/Zoom Controls -->
+      <div id="spectrogramArea">
+        
+        <!-- Y軸(周波数)コントロール -->
+        <div id="controlY">
+          <button id="btnZoomInY" class="zoom-btn">+</button>
+          <input type="range" id="sliderPanY" min="0" max="1000" value="500" orient="vertical">
+          <button id="btnZoomOutY" class="zoom-btn">-</button>
+        </div>
+
+        <div id="spectrogramWrapper" oncontextmenu="return false;">
+          <canvas id="spectrogramCanvas"></canvas>
+          <canvas id="partialCanvas"></canvas>
+          <canvas id="uiCanvas"></canvas>
+        </div>
+      </div>
+
+      <!-- X軸(時間)コントロール -->
+      <div id="controlX">
+        <button id="btnZoomOutX" class="zoom-btn">-</button>
+        <input type="range" id="sliderPanX" min="0" max="1000" value="0">
+        <button id="btnZoomInX" class="zoom-btn">+</button>
       </div>
 
       <!-- ピアノロール (Synthモード専用) -->
       <div id="pianoRoll" style="display:none;"></div>
     </div>
+
+    <!-- サイドパネル開閉ボタン -->
+    <div id="panelToggleBtn" title="サイドパネルを開閉">▶</div>
 
     <!-- Control Panel -->
     <aside id="controlPanel">
@@ -93,6 +114,34 @@
 
       <!-- シンセ作成モード専用パネル -->
       <div id="panelSynth" class="panel-mode-group">
+        
+        <!-- ADSR Envelope -->
+        <div class="panel-section">
+          <h3>ADSR Envelope</h3>
+          
+          <div class="adsr-row">
+            <div class="adsr-label">Att</div>
+            <input type="range" id="adsrASlider" min="0" max="2000" step="1" value="10">
+            <input type="number" id="adsrANum" value="10" min="0" max="10000"><span>ms</span>
+          </div>
+          <div class="adsr-row">
+            <div class="adsr-label">Dec</div>
+            <input type="range" id="adsrDSlider" min="0" max="2000" step="1" value="500">
+            <input type="number" id="adsrDNum" value="500" min="0" max="10000"><span>ms</span>
+          </div>
+          <div class="adsr-row">
+            <div class="adsr-label">Sus</div>
+            <input type="range" id="adsrSSlider" min="0" max="100" step="1" value="100">
+            <input type="number" id="adsrSNum" value="100" min="0" max="100"><span>%</span>
+          </div>
+          <div class="adsr-row">
+            <div class="adsr-label">Rel</div>
+            <input type="range" id="adsrRSlider" min="0" max="5000" step="1" value="300">
+            <input type="number" id="adsrRNum" value="300" min="0" max="10000"><span>ms</span>
+          </div>
+          
+        </div>
+
         <div class="panel-section">
           <h3>Playback Speed (Time-Stretch)</h3>
           <div class="slider-block">
@@ -103,14 +152,14 @@
             <input type="range" id="speedSlider" min="0" max="2" step="0.05" value="1">
           </div>
           <div style="font-size:10px;color:#8b949e;margin-top:4px;line-height:1.4">
-            0.0倍にすると、スペクトログラム上でクリック指定した位置の波形をフリーズし、10秒間の無限ループを生成します。
+            0.0倍にすると指定位置の波形をフリーズし、10秒間の無限ループを生成します。
           </div>
         </div>
+        
         <div class="panel-section" style="flex:1">
           <h3>Multi-sample Export</h3>
           <p class="hint" style="margin-bottom:10px;line-height:1.4">
-            再合成を実行すると 3オクターブ分 (C3〜B5) の波形を自動生成します。<br>
-            生成完了後、下のピアノロールを押して試聴できます。
+            再合成を実行すると 3オクターブ分 (C3〜B5) を自動生成します。
           </p>
           <button id="exportZipBtn" disabled style="width:100%;font-size:11px">📦 36音を ZIP でダウンロード</button>
         </div>
@@ -124,15 +173,14 @@
             <input type="checkbox" id="snapCheck" checked> 12音スナップ (半音吸着)
           </label>
           <label style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:12px;color:#e6edf3;cursor:pointer">
-            <input type="checkbox" id="showOrigF0Check" checked> 推定ピッチカーブ(青破線)を表示
+            <input type="checkbox" id="showOrigF0Check" checked> 推定ピッチカーブ(青)を表示
           </label>
           <button id="resetF0Btn" style="width:100%;font-size:11px">描画リセット</button>
           
           <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
             <div>🖱 左ドラッグ: ピッチカーブ描画</div>
-            <div>🖱 右ドラッグ / 中ドラッグ: 画面移動(パン)</div>
-            <div>🖱 ホイール: 時間軸ズーム</div>
-            <div>🖱 Shift+ホイール: 周波数軸ズーム</div>
+            <div>🖱 右ドラッグ / 中ドラッグ: パン移動</div>
+            <div>🖱 上部波形クリック: 再生位置指定</div>
           </div>
         </div>
       </div>
@@ -147,7 +195,7 @@
     <button id="playSynthBtn" disabled>▶ Synth</button>
     <button id="stopBtn">■ Stop</button>
     <div class="transport-sep"></div>
-    <span style="font-size:11px;color:#8b949e;margin-right:auto">スペクトログラムをクリックして開始位置を設定できます</span>
+    <span style="font-size:11px;color:#8b949e;margin-right:auto">上部の波形エリアをクリックして開始位置を設定できます</span>
     <button id="exportBtn" disabled>💾 単一 WAV Export</button>
   </div>
 
