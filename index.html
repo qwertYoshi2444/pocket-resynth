@@ -14,9 +14,10 @@
     <h1>Harmor Web</h1>
     <span class="subtitle">Spectral Additive Engine</span>
     
+    <!-- モード切替タブ (名称変更) -->
     <div id="modeTabs">
       <button id="tabSynth" class="tab-btn active">🎹 シンセ作成モード</button>
-      <button id="tabVocal" class="tab-btn">🎤 歌わせモード</button>
+      <button id="tabVocal" class="tab-btn">🎤 ピッチ補正モード</button>
     </div>
 
     <span id="fileInfo">— ファイル未読み込み —</span>
@@ -95,7 +96,7 @@
     <!-- Control Panel -->
     <aside id="controlPanel">
       
-      <!-- Global Pitch Shift (整数化＆直接入力対応) -->
+      <!-- 共通: Global Pitch Shift -->
       <div class="panel-section">
         <h3>Global Pitch Shift</h3>
         <div class="slider-block">
@@ -104,6 +105,21 @@
             <input type="number" id="pitchNum" value="0" min="-24" max="24" step="1" class="value-input">
           </div>
           <input type="range" id="pitchSlider" min="-24" max="24" step="1" value="0">
+        </div>
+      </div>
+
+      <!-- 共通: Playback Speed (Time-Stretch) 移動 -->
+      <div class="panel-section">
+        <h3>Playback Speed</h3>
+        <div class="slider-block">
+          <div class="slider-header">
+            <span class="label">Speed</span>
+            <span class="value" id="speedValue">1.00x</span>
+          </div>
+          <input type="range" id="speedSlider" min="0" max="2" step="0.05" value="1">
+        </div>
+        <div style="font-size:10px;color:#8b949e;margin-top:4px;line-height:1.4">
+          0.0倍にするとStart位置の波形をフリーズし、10秒間のループを生成します。
         </div>
       </div>
 
@@ -133,20 +149,6 @@
             <input type="number" id="adsrRNum" value="300" min="0" max="10000"><span>ms</span>
           </div>
         </div>
-
-        <div class="panel-section">
-          <h3>Playback Speed (Time-Stretch)</h3>
-          <div class="slider-block">
-            <div class="slider-header">
-              <span class="label">Speed</span>
-              <span class="value" id="speedValue">1.00x</span>
-            </div>
-            <input type="range" id="speedSlider" min="0" max="2" step="0.05" value="1">
-          </div>
-          <div style="font-size:10px;color:#8b949e;margin-top:4px;line-height:1.4">
-            0.0倍にするとStart位置の波形をフリーズし、10秒間の無限ループを生成します。
-          </div>
-        </div>
         
         <div class="panel-section" style="flex:1">
           <h3>Multi-sample / MIDI</h3>
@@ -157,7 +159,7 @@
           
           <hr style="border:0;border-top:1px solid var(--border);margin:10px 0;">
           
-          <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルから純粋なノートを抽出し、指定範囲の波形とADSRを用いて自動ミックスします。</p>
+          <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルからノートを抽出し、指定範囲の波形とADSRを用いて自動ミックスします。</p>
           <button id="loadMidiBtn" style="width:100%;font-size:11px;margin-bottom:6px;">📂 MIDIファイルを選択</button>
           <input type="file" id="midiInput" accept=".mid,.midi" hidden>
           <span id="midiInfo" style="display:block;font-size:10px;color:#58a6ff;margin-bottom:8px;text-align:center;">未選択</span>
@@ -165,7 +167,7 @@
         </div>
       </div>
 
-      <!-- 歌わせモード専用パネル -->
+      <!-- ピッチ補正モード専用パネル -->
       <div id="panelVocal" class="panel-mode-group" style="display:none;">
         <div class="panel-section" style="flex:1">
           <h3>Pitch Curve Editor</h3>
@@ -179,9 +181,9 @@
           
           <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
             <div>🖱 左ドラッグ: ピッチカーブ描画</div>
-            <div>🖱 右ドラッグ / 中ドラッグ: パン移動</div>
-            <div>🖱 上部波形(左): 再生開始(Start)指定</div>
-            <div>🖱 上部波形(右): 再生終了(End)指定</div>
+            <div>🖱 右 / 中ドラッグ: パン移動</div>
+            <div>🖱 上部波形(左): 再生開始(Start)</div>
+            <div>🖱 上部波形(右): 再生終了(End)</div>
           </div>
         </div>
       </div>
@@ -210,7 +212,7 @@
 
 <!-- Scripts -->
 <script src="js/fft.js"></script>
-<script src="js/midi_parser.js"></script> <!-- 新規 -->
+<script src="js/midi_parser.js"></script>
 <script src="js/analysis.js"></script>
 <script src="js/synthesis.js"></script>
 <script src="js/renderer.js"></script>

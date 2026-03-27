@@ -1,6 +1,6 @@
 'use strict';
 /**
- * renderer.js — Canvas Visualization Engine
+ * renderer.js — Canvas Visualization Engine (Optimized with LUT & Downscaling)
  */
 class SpectralRenderer {
   constructor({ spectrogramCanvas, partialCanvas, uiCanvas, waveformCanvas }) {
@@ -17,12 +17,11 @@ class SpectralRenderer {
     this.viewEnd   = 1;
     this.freqMin   = 20;
     this.freqMax   = 20000;
-    
     this.minFreqZoomRangeL = Math.log2(2); 
     
     this.playhead  = 0;
     this.startTime = 0;
-    this.endTime   = 1; // 追加: 再合成の終了点
+    this.endTime   = 1;
 
     this.appMode = 'synth';
     this.f0Data = null;
@@ -30,13 +29,41 @@ class SpectralRenderer {
     this.isSnapMode = true;
     this.showOrigF0 = true;
 
+    this.isInteracting = false; // 高負荷時のダウンスケールフラグ
+
     this.onSetStartTime = null;
-    this.onSetEndTime   = null; // 追加: 終了点コールバック
+    this.onSetEndTime   = null;
     this.onViewChange   = null;
 
-    this._colormap = this._buildColormap();
+    // 1024段階のカラーLUTを事前計算 (Uint32Array に ABGR 形式で格納)
+    this._colorLUT = new Uint32Array(1024);
+    this._buildColorLUT();
+
     this._bindEvents();
     this._bindWaveformEvents();
+  }
+
+  // A, B, G, R の順でリトルエンディアンの32bit整数を生成するLUT
+  _buildColorLUT() {
+    const colormap = [
+      [0,0,4],[20,11,52],[58,9,99],[96,19,110],[133,33,107],[169,46,94],
+      [203,65,73],[229,89,52],[247,121,23],[252,165,10],[244,204,71],[252,255,164]
+    ];
+    const n = colormap.length - 1;
+    for (let i = 0; i < 1024; i++) {
+      let t = i / 1023.0;
+      t = Math.max(0, Math.min(1, Math.pow(t, 0.45))); // ガンマ補正 (暗く)
+      t *= 0.7; // さらに暗くして線を際立たせる
+
+      const pos = t * n, i0 = Math.floor(pos), i1 = Math.min(i0+1, n), f = pos - i0;
+      const c0 = colormap[i0], c1 = colormap[i1];
+      const r = c0[0] + (c1[0] - c0[0]) * f | 0;
+      const g = c0[1] + (c1[1] - c0[1]) * f | 0;
+      const b = c0[2] + (c1[2] - c0[2]) * f | 0;
+      
+      // 32-bit (A, B, G, R) format (Little Endian)
+      this._colorLUT[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+    }
   }
 
   setAnalysis(analysis, audioData) {
@@ -45,7 +72,7 @@ class SpectralRenderer {
     this.viewStart = 0;
     if (analysis && analysis.duration) {
       this.viewEnd = analysis.duration;
-      this.endTime = analysis.duration; // 初期値は曲の末尾
+      this.endTime = analysis.duration;
     }
     this.freqMin   = 20;
     this.freqMax   = 20000;
@@ -54,10 +81,7 @@ class SpectralRenderer {
   }
 
   setView(vs, ve, fm, fx) {
-    this.viewStart = vs;
-    this.viewEnd = ve;
-    this.freqMin = fm;
-    this.freqMax = fx;
+    this.viewStart = vs; this.viewEnd = ve; this.freqMin = fm; this.freqMax = fx;
     this.renderAll();
   }
 
@@ -86,11 +110,13 @@ class SpectralRenderer {
     const sr = this.analysis ? this.analysis.sampleRate : 44100;
     const s0 = Math.floor(this.viewStart * sr);
     const span = Math.ceil((this.viewEnd - this.viewStart) * sr);
+    // 描画間引き(ダウンスケール)
+    const stepX = this.isInteracting ? 2 : 1;
 
     cx.strokeStyle = '#1db954'; cx.lineWidth = 1; cx.beginPath();
-    for (let xi = 0; xi < W; xi++) {
+    for (let xi = 0; xi < W; xi += stepX) {
       const a = s0 + Math.floor(xi / W * span);
-      const b = s0 + Math.floor((xi + 1) / W * span);
+      const b = s0 + Math.floor((xi + stepX) / W * span);
       let mn = 0, mx = 0;
       for (let s = a; s < b && s < this.audioData.length; s++) {
         const v = this.audioData[s];
@@ -101,8 +127,7 @@ class SpectralRenderer {
       if (xi === 0) cx.moveTo(xi, (y0 + y1) / 2); else { cx.lineTo(xi, y0); cx.lineTo(xi, y1); }
     }
     cx.stroke();
-    cx.strokeStyle = 'rgba(255,255,255,0.08)';
-    cx.beginPath(); cx.moveTo(0, H/2); cx.lineTo(W, H/2); cx.stroke();
+    cx.strokeStyle = 'rgba(255,255,255,0.08)'; cx.beginPath(); cx.moveTo(0, H/2); cx.lineTo(W, H/2); cx.stroke();
   }
 
   _drawWaveformUI() {
@@ -111,15 +136,12 @@ class SpectralRenderer {
     const cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
 
-    // 選択範囲のハイライト背景
     if (this.startTime >= 0 && this.endTime >= 0 && this.endTime > this.startTime) {
       const sx = Math.max(0, this._timeToX(this.startTime, W));
       const ex = Math.min(W, this._timeToX(this.endTime, W));
-      cx.fillStyle = 'rgba(255, 255, 255, 0.05)';
-      cx.fillRect(sx, 0, ex - sx, H);
+      cx.fillStyle = 'rgba(255, 255, 255, 0.05)'; cx.fillRect(sx, 0, ex - sx, H);
     }
 
-    // Start Marker (Green)
     if (this.startTime >= this.viewStart && this.startTime <= this.viewEnd) {
       const sx = this._timeToX(this.startTime, W);
       cx.strokeStyle = 'rgba(29, 185, 84, 0.9)'; cx.lineWidth = 2;
@@ -128,7 +150,6 @@ class SpectralRenderer {
       cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx+6, 0); cx.lineTo(sx, 8); cx.lineTo(sx-6, 0); cx.fill();
     }
 
-    // End Marker (Red)
     if (this.endTime >= this.viewStart && this.endTime <= this.viewEnd) {
       const ex = this._timeToX(this.endTime, W);
       cx.strokeStyle = 'rgba(255, 68, 68, 0.8)'; cx.lineWidth = 2;
@@ -137,7 +158,6 @@ class SpectralRenderer {
       cx.beginPath(); cx.moveTo(ex, 0); cx.lineTo(ex+6, 0); cx.lineTo(ex, 8); cx.lineTo(ex-6, 0); cx.fill();
     }
 
-    // Playhead (Red/Orange)
     if (this.playhead >= this.viewStart && this.playhead <= this.viewEnd) {
       const xp = this._timeToX(this.playhead, W);
       cx.strokeStyle = '#ff8844'; cx.lineWidth = 1.5;
@@ -154,25 +174,37 @@ class SpectralRenderer {
 
     const { spectrogram, spectFreqs, sampleRate, hopSize } = this.analysis;
     const img = cx.createImageData(W, H);
-    const pix = img.data;
+    // Uint32Array ビューを用いて1ピクセル(4バイト)ずつ高速に書き込む
+    const buf32 = new Uint32Array(img.data.buffer);
     
     let gMax = 0;
     for (const band of spectrogram) for (const v of band) if (v > gMax) gMax = v;
     if (gMax < 1e-10) return;
 
-    for (let xi = 0; xi < W; xi++) {
+    const stepXY = this.isInteracting ? 2 : 1; // 間引きダウンスケール
+
+    for (let xi = 0; xi < W; xi += stepXY) {
       const t = this.viewStart + (xi / W) * (this.viewEnd - this.viewStart);
       const fi = Math.round(t * sampleRate / hopSize);
       if (fi < 0 || fi >= spectrogram.length) continue;
       const band = spectrogram[fi];
 
-      for (let yi = 0; yi < H; yi++) {
+      for (let yi = 0; yi < H; yi += stepXY) {
         const freq = this._yToFreq(yi, H);
         let bi = this._nearestBandIdx(freq, spectFreqs);
         const amp = band[bi] / gMax;
-        const [r, g, b] = this._ampToRGB(amp * 0.7); 
-        const p = (yi * W + xi) * 4;
-        pix[p] = r; pix[p+1] = g; pix[p+2] = b; pix[p+3] = 255;
+        
+        // LUTから32bitカラーを取得
+        let lutIdx = Math.floor(amp * 1023);
+        if (lutIdx > 1023) lutIdx = 1023;
+        const color32 = this._colorLUT[lutIdx];
+
+        // ダウンスケール時はピクセルを四角く塗る
+        for (let dx = 0; dx < stepXY && xi + dx < W; dx++) {
+          for (let dy = 0; dy < stepXY && yi + dy < H; dy++) {
+            buf32[(yi + dy) * W + (xi + dx)] = color32;
+          }
+        }
       }
     }
     cx.putImageData(img, 0, 0);
@@ -233,6 +265,10 @@ class SpectralRenderer {
     const cv = this.partC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
     if (!this.analysis || !this.analysis.partials) return;
+    
+    // 操作中は負荷軽減のため Partial を描画しないか間引く
+    if (this.isInteracting) return;
+
     const { partials, hopSize, sampleRate } = this.analysis;
 
     for (const p of partials) {
@@ -254,6 +290,17 @@ class SpectralRenderer {
   _drawUI() {
     const cv = this.uiC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
+
+    if (this.startTime >= this.viewStart && this.startTime <= this.viewEnd) {
+      const sx = this._timeToX(this.startTime, W);
+      cx.strokeStyle = 'rgba(29, 185, 84, 0.4)'; cx.lineWidth = 1;
+      cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx, H); cx.stroke();
+    }
+    if (this.playhead >= this.viewStart && this.playhead <= this.viewEnd) {
+      const xp = this._timeToX(this.playhead, W);
+      cx.strokeStyle = 'rgba(255, 68, 68, 0.4)'; cx.lineWidth = 1;
+      cx.beginPath(); cx.moveTo(xp, 0); cx.lineTo(xp, H); cx.stroke();
+    }
 
     if (this.appMode === 'vocal' && this.analysis && this.f0Data) {
       const { hopSize, sampleRate } = this.analysis;
@@ -282,7 +329,7 @@ class SpectralRenderer {
   }
 
   // -----------------------------------------------------------------------
-  // Interaction
+  // Interaction (Interacting flag toggle for performance)
   // -----------------------------------------------------------------------
   _bindWaveformEvents() {
     const ui = this.waveUiC;
@@ -291,16 +338,15 @@ class SpectralRenderer {
     let draggingStart = false;
     let draggingEnd   = false;
 
-    // 左クリック = StartTime, 右クリック = EndTime
     const updateTime = (e, isStart) => {
       const t = this._xToTime(e.offsetX, ui.width);
       const clamped = Math.max(0, Math.min(t, this.analysis ? this.analysis.duration : 60));
       
       if (isStart) {
-        this.startTime = Math.min(clamped, this.endTime - 0.05); // Endを超えない
+        this.startTime = Math.min(clamped, this.endTime - 0.05); 
         if (this.onSetStartTime) this.onSetStartTime(this.startTime);
       } else {
-        this.endTime = Math.max(clamped, this.startTime + 0.05); // Startを下回らない
+        this.endTime = Math.max(clamped, this.startTime + 0.05); 
         if (this.onSetEndTime) this.onSetEndTime(this.endTime);
       }
       this._drawUI();
@@ -308,6 +354,7 @@ class SpectralRenderer {
     };
 
     ui.addEventListener('mousedown', e => {
+      this.isInteracting = true;
       if (e.button === 0) { draggingStart = true; updateTime(e, true); }
       else if (e.button === 2) { draggingEnd = true; updateTime(e, false); }
     });
@@ -317,10 +364,8 @@ class SpectralRenderer {
       if (draggingEnd) updateTime(e, false);
     });
     
-    ui.addEventListener('mouseup', () => { draggingStart = false; draggingEnd = false; });
-    ui.addEventListener('mouseleave', () => { draggingStart = false; draggingEnd = false; });
-    
-    // コンテキストメニュー無効化
+    ui.addEventListener('mouseup', () => { this.isInteracting = false; draggingStart = false; draggingEnd = false; this.renderAll(); });
+    ui.addEventListener('mouseleave', () => { this.isInteracting = false; draggingStart = false; draggingEnd = false; });
     ui.addEventListener('contextmenu', e => e.preventDefault());
   }
 
@@ -334,6 +379,7 @@ class SpectralRenderer {
     let panFMinL = 0, panFMaxL = 0;
 
     ui.addEventListener('mousedown', e => {
+      this.isInteracting = true;
       if (e.button === 1 || e.button === 2) {
         draggingPan = true;
         panStartX = e.offsetX; panStartY = e.offsetY;
@@ -352,20 +398,17 @@ class SpectralRenderer {
         
         const timeSpan = panVEnd - panVStart;
         const dt = (dx / ui.width) * timeSpan;
-        let newStart = panVStart - dt;
-        let newEnd = panVEnd - dt;
+        let newStart = panVStart - dt; let newEnd = panVEnd - dt;
 
         const maxTime = this.analysis ? this.analysis.duration : 60;
         if (newStart < 0) { newEnd -= newStart; newStart = 0; }
         if (newEnd > maxTime) { newStart -= (newEnd - maxTime); newEnd = maxTime; }
-        this.viewStart = Math.max(0, newStart);
-        this.viewEnd = Math.min(maxTime, newEnd);
+        this.viewStart = Math.max(0, newStart); this.viewEnd = Math.min(maxTime, newEnd);
 
         const freqSpanL = panFMaxL - panFMinL;
         const df = (dy / ui.height) * freqSpanL; 
         
-        let newFMaxL = panFMaxL + df;
-        let newFMinL = panFMinL + df;
+        let newFMaxL = panFMaxL + df; let newFMinL = panFMinL + df;
         const minL = Math.log2(20), maxL = Math.log2(20000);
         
         if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
@@ -373,6 +416,7 @@ class SpectralRenderer {
         
         this.freqMax = Math.pow(2, newFMaxL); this.freqMin = Math.pow(2, newFMinL);
 
+        // 高速ダウンスケール描画
         this.renderAll();
         if (this.onViewChange) this.onViewChange();
         return;
@@ -385,14 +429,17 @@ class SpectralRenderer {
     });
 
     ui.addEventListener('mouseup', e => {
+      this.isInteracting = false;
+      this.renderAll(); // フル解像度で再描画
       if (e.button === 1 || e.button === 2) { draggingPan = false; return; }
       if (draggingLeft) draggingLeft = false;
     });
 
-    ui.addEventListener('mouseleave', () => { draggingLeft = false; draggingPan = false; });
+    ui.addEventListener('mouseleave', () => { this.isInteracting = false; draggingLeft = false; draggingPan = false; });
 
     ui.addEventListener('wheel', e => {
       e.preventDefault();
+      this.isInteracting = true; // ホイール中は間引き
       const scale = e.deltaY > 0 ? 1.15 : 0.87;
 
       if (e.shiftKey) {
@@ -420,6 +467,13 @@ class SpectralRenderer {
       }
       this.renderAll();
       if (this.onViewChange) this.onViewChange();
+      
+      // ホイール操作完了の簡易判定 (タイムアウト)
+      clearTimeout(this._wheelTimeout);
+      this._wheelTimeout = setTimeout(() => {
+        this.isInteracting = false;
+        this.renderAll();
+      }, 150);
     }, { passive: false });
   }
 
@@ -450,18 +504,4 @@ class SpectralRenderer {
   _yToFreq(y, H) { const lm = Math.log2(this.freqMin), lM = Math.log2(this.freqMax); return Math.pow(2, lm + (1 - y / H) * (lM - lm)); }
   _timeToX(t, W) { return (t - this.viewStart) / (this.viewEnd - this.viewStart) * W; }
   _xToTime(x, W) { return this.viewStart + x / W * (this.viewEnd - this.viewStart); }
-
-  _buildColormap() {
-    return [
-      [0,0,4],[20,11,52],[58,9,99],[96,19,110],[133,33,107],[169,46,94],
-      [203,65,73],[229,89,52],[247,121,23],[252,165,10],[244,204,71],[252,255,164]
-    ];
-  }
-  _ampToRGB(t) {
-    t = Math.max(0, Math.min(1, Math.pow(t, 0.45))); 
-    const cm = this._colormap, n = cm.length - 1;
-    const pos = t * n, i0 = Math.floor(pos), i1 = Math.min(i0+1, n), f = pos - i0;
-    const c0 = cm[i0], c1 = cm[i1];
-    return [ c0[0]+(c1[0]-c0[0])*f|0, c0[1]+(c1[1]-c0[1])*f|0, c0[2]+(c1[2]-c0[2])*f|0 ];
-  }
 }

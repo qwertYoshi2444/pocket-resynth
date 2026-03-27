@@ -1,6 +1,6 @@
 'use strict';
 /**
- * analysis.js — Spectral Analysis Engine
+ * analysis.js — Spectral Analysis Engine (Optimized)
  */
 class SpectralAnalyzer {
   constructor(opts = {}) {
@@ -16,13 +16,16 @@ class SpectralAnalyzer {
     this.fft     = new FFT(this.fftSize);
     this.window  = this._hann(this.fftSize);
     this.winSum  = this.window.reduce((a, b) => a + b, 0);
-    this.thresh  = (this.winSum / 2) * Math.pow(10, this.threshDb / 20);
+    this.threshSq = Math.pow((this.winSum / 2) * Math.pow(10, this.threshDb / 20), 2); // 比較用二乗値
 
     this._real = new Float64Array(this.fftSize);
     this._imag = new Float64Array(this.fftSize);
 
     this._spectFreqs = this._logSpacedFreqs(20, this.sampleRate / 2, this.spectBands);
-    this._spectBins  = this._spectFreqs.map(f => Math.round(f * this.fftSize / this.sampleRate));
+    this._spectBins  = new Uint16Array(this.spectBands);
+    for (let i = 0; i < this.spectBands; i++) {
+      this._spectBins[i] = Math.round(this._spectFreqs[i] * this.fftSize / this.sampleRate);
+    }
   }
 
   async analyze(audio, onProgress) {
@@ -45,8 +48,7 @@ class SpectralAnalyzer {
 
       const offset = fi * hop;
       for (let i = 0; i < N; i++) {
-        const s = (offset + i < len) ? audio[offset + i] : 0;
-        this._real[i] = s * this.window[i];
+        this._real[i] = (offset + i < len) ? audio[offset + i] * this.window[i] : 0;
         this._imag[i] = 0;
       }
       this.fft.forward(this._real, this._imag);
@@ -84,16 +86,25 @@ class SpectralAnalyzer {
     const f0 = new Float32Array(numFrames);
     const activeAt = Array.from({ length: numFrames }, () => []);
     
-    for (const p of partials) for (const s of p.segs) activeAt[s.fi].push(s);
+    for (let i = 0; i < partials.length; i++) {
+      const segs = partials[i].segs;
+      for (let j = 0; j < segs.length; j++) activeAt[segs[j].fi].push(segs[j]);
+    }
     
     for (let fi = 0; fi < numFrames; fi++) {
       const active = activeAt[fi];
       if (active.length === 0) continue;
       
       active.sort((a, b) => b.amp - a.amp);
-      const tops = active.slice(0, 10).filter(s => s.freq > 60 && s.freq < 1200);
       
-      if (tops.length > 0) {
+      let topsCount = 0;
+      const tops = [];
+      for (let k = 0; k < active.length && topsCount < 10; k++) {
+        const s = active[k];
+        if (s.freq > 60 && s.freq < 1200) { tops.push(s); topsCount++; }
+      }
+      
+      if (topsCount > 0) {
         tops.sort((a, b) => a.freq - b.freq);
         f0[fi] = tops[0].freq;
       }
@@ -120,7 +131,7 @@ class SpectralAnalyzer {
       const re0 = real[i], im0 = imag[i];
       const m0  = re0 * re0 + im0 * im0;
 
-      if (m0 <= this.thresh * this.thresh) continue;
+      if (m0 <= this.threshSq) continue;
       const m_1 = real[i-1]*real[i-1] + imag[i-1]*imag[i-1];
       const m_2 = real[i-2]*real[i-2] + imag[i-2]*imag[i-2];
       const mp1 = real[i+1]*real[i+1] + imag[i+1]*imag[i+1];
@@ -143,13 +154,15 @@ class SpectralAnalyzer {
       const amp    = Math.exp(logAmp) * 2 / this.winSum;
       const ph0  = Math.atan2(im0, re0);
       const phR  = Math.atan2(imag[i+1], real[i+1]);
-      const ph   = ph0 + p * unwrapAngle(phR - ph0);
+      let ph = ph0 + p * (phR - ph0);
+      while(ph > Math.PI) ph -= 2*Math.PI;
+      while(ph < -Math.PI) ph += 2*Math.PI;
 
       peaks.push({ freq, amp, phase: ph, bin: i });
     }
 
     peaks.sort((a, b) => b.amp - a.amp);
-    return peaks.slice(0, this.maxPartials);
+    return peaks.length > this.maxPartials ? peaks.slice(0, this.maxPartials) : peaks;
   }
 
   async _trackPartials(frames, numFrames, onProgress) {
@@ -165,15 +178,17 @@ class SpectralAnalyzer {
         await yieldToUI();
       }
 
-      const peaks = [...frames[fi].peaks].sort((a, b) => a.freq - b.freq);
+      const peaks = frames[fi].peaks;
+      peaks.sort((a, b) => a.freq - b.freq); // 周波数順にソート
+      
       const matched = new Uint8Array(peaks.length);
       const nextActive = new Map();
 
-      const activeArr = Array.from(active.values())
-        .map(p => ({ id: p.id, segs: p.segs, lastFreq: p.segs[p.segs.length - 1].freq }))
-        .sort((a, b) => a.lastFreq - b.lastFreq);
+      const activeArr = Array.from(active.values());
+      activeArr.sort((a, b) => a.lastFreq - b.lastFreq);
 
-      for (const ap of activeArr) {
+      for (let i = 0; i < activeArr.length; i++) {
+        const ap = activeArr[i];
         const lf  = ap.lastFreq;
         let best  = -1, bestDist = Infinity;
 
@@ -185,11 +200,11 @@ class SpectralAnalyzer {
 
         if (best >= 0) {
           matched[best] = 1;
-          ap.segs.push({ fi, ...peaks[best] });
-          nextActive.set(ap.id, { id: ap.id, segs: ap.segs });
+          ap.segs.push({ fi, freq: peaks[best].freq, amp: peaks[best].amp, phase: peaks[best].phase });
+          ap.lastFreq = peaks[best].freq;
+          nextActive.set(ap.id, ap);
         } else {
-          const last = ap.segs[ap.segs.length - 1];
-          ap.segs.push({ fi, freq: last.freq, amp: 0, phase: last.phase });
+          ap.segs.push({ fi, freq: lf, amp: 0, phase: 0 }); // phase 0 簡略化 (フェードアウト用)
           if (ap.segs.length >= this.minFrames) completed.push({ id: ap.id, segs: ap.segs });
         }
       }
@@ -197,7 +212,7 @@ class SpectralAnalyzer {
       for (let pi = 0; pi < peaks.length; pi++) {
         if (!matched[pi]) {
           const id = nextId++;
-          nextActive.set(id, { id, segs: [{ fi, ...peaks[pi] }] });
+          nextActive.set(id, { id, segs: [{ fi, freq: peaks[pi].freq, amp: peaks[pi].amp, phase: peaks[pi].phase }], lastFreq: peaks[pi].freq });
         }
       }
 
@@ -224,8 +239,3 @@ class SpectralAnalyzer {
 }
 
 function yieldToUI() { return new Promise(r => setTimeout(r, 0)); }
-function unwrapAngle(d) {
-  while (d >  Math.PI) d -= 2 * Math.PI;
-  while (d < -Math.PI) d += 2 * Math.PI;
-  return d;
-}

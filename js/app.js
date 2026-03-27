@@ -1,13 +1,13 @@
 'use strict';
 /**
- * app.js — Application Controller
+ * app.js — Application Controller (Optimized with Web Worker)
  */
 class HarmorApp {
   constructor() {
     this.audio    = new AudioManager();
     this.exporter = new WAVExporter();
     this.analyzer = null;
-    this.synth    = null;
+    this.synth    = null; // AdditiveSynthesizer (Worker Wrapper)
     this.renderer = null;
 
     this.audioData   = null;
@@ -15,7 +15,6 @@ class HarmorApp {
     this.analysis    = null;
     this.synthData   = null;
 
-    // States
     this.mode = 'synth';
     this.globalSemitones = 0;
     this.playbackSpeed = 1.0;
@@ -24,8 +23,7 @@ class HarmorApp {
     this.synthBuffersMap = new Map(); 
 
     this.adsr = { a: 10, d: 500, s: 100, r: 300 };
-
-    this.midiEvents = []; // parsed MIDI notes
+    this.midiEvents = [];
 
     this._initRenderer();
     this._buildPianoRoll();
@@ -42,10 +40,8 @@ class HarmorApp {
 
     this.renderer.onSetStartTime = (t) => { this.startTime = t; };
     this.renderer.onSetEndTime   = (t) => { this.endTime = t; };
-
     this.renderer.onViewChange = () => { this._updateScrollSlidersFromRenderer(); };
 
-    // プレイヘッドの同期修正 (再生速度を加味して描画位置を補正)
     this.audio.onTimeUpdate = (t) => {
       let uiTime = t;
       if (this.audio._src && this.audio._src.buffer === this.audio.synthBuf) {
@@ -82,7 +78,6 @@ class HarmorApp {
       setTimeout(() => this._resizeCanvases(), 300);
     });
 
-    // PitchSlider: number入力に対応、step=1の整数のみ
     const pitchSl = $('pitchSlider'), pitchNum = $('pitchNum');
     const updatePitch = (val) => {
       let v = parseInt(val);
@@ -140,7 +135,7 @@ class HarmorApp {
     $('exportBtn').addEventListener('click', () => {
       if (this.synthData) {
         this.exporter.download(this.synthData, this.sampleRate, 'harmor-export.wav');
-        this._status('WAV エクスポート完了', 'ok');
+        this._status('単一WAV エクスポート完了', 'ok');
       }
     });
 
@@ -234,7 +229,6 @@ class HarmorApp {
     if (this.analysis) this.renderer.renderAll();
   }
 
-  // --- MIDI Load ---
   async _loadMidi(file) {
     try {
       const buffer = await file.arrayBuffer();
@@ -297,6 +291,7 @@ class HarmorApp {
 
     try {
       this.analysis = await this.analyzer.analyze(this.audioData, p => this._progress(p));
+      // Synth Wrapper (Worker) を初期化
       this.synth = new AdditiveSynthesizer(this.sampleRate, this.analysis.hopSize);
 
       this.renderer.setAnalysis(this.analysis, this.audioData);
@@ -321,7 +316,7 @@ class HarmorApp {
   async _synthesize() {
     if (!this.analysis) return;
     $('synthesizeBtn').disabled = true;
-    this._status('プレビュー生成中…', 'info');
+    this._status('プレビュー生成中 (Worker動作中)…', 'info');
     this._progress(0);
 
     const getPitchMap = (baseSemitones) => {
@@ -340,7 +335,7 @@ class HarmorApp {
       const speed = this.mode === 'synth' ? this.playbackSpeed : 1.0;
       const adsrToApply = this.mode === 'synth' ? this.adsr : null;
 
-      // 範囲指定 (startTime -> endTime)
+      // PromiseベースでWorkerの処理完了を待機
       this.synthData = await this.synth.synthesize(
         this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, this.endTime, adsrToApply, null, p => this._progress(p)
       );
@@ -354,8 +349,9 @@ class HarmorApp {
         this.synthBuffersMap.clear();
         
         for (let note = 48; note <= 83; note++) {
-          const stShift = (note - 60) + this.globalSemitones; // C4(60)
+          const stShift = (note - 60) + this.globalSemitones;
           const map = getPitchMap(stShift);
+          // Workerに次々とジョブを投げる (順番に処理される)
           const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, this.endTime, adsrToApply, null, null);
           this.synthBuffersMap.set(note, data);
           this._progress((note - 48) / 36);
@@ -374,58 +370,39 @@ class HarmorApp {
     }
   }
 
-  // --- MIDI Render Logic ---
   async _renderMidiAndDownload() {
     if (!this.analysis || this.midiEvents.length === 0) return;
     
     $('renderMidiBtn').disabled = true;
-    this._status('MIDI レンダリング中 (音素生成)…', 'info');
+    this._status('MIDI レンダリング中 (Workerによる音素生成)…', 'info');
     this._progress(0);
 
     try {
-      // 1. 使用されているノートだけを生成
       const usedNotes = [...new Set(this.midiEvents.map(e => e.note))];
       const speed = this.playbackSpeed;
-      const baseMap = new Map(); // note -> raw buffer (NO ADSR yet)
       
-      let i = 0;
-      for (const note of usedNotes) {
-        const stShift = (note - 60) + this.globalSemitones;
-        const pitchMap = (fi, freq) => Math.pow(2, stShift / 12);
-        // 各ノートの「長さに応じた合成」を行うため、この時点では ADSR=null, duration=null で純粋な全体波形を抽出
-        // ※高速化のため、ここでは「最も長いノート」に合わせて作っておくのが理想ですが、
-        // 今回はシンプルに都度合成 (synthesize内にdurationSec引数を新設済み) を使います。
-        i++;
-        this._progress(i / (usedNotes.length * 2));
-      }
-
       this._status('MIDI ミックス中 (ADSR付与 & オートゲイン)…', 'info');
 
-      // 2. ミックス処理
-      // 曲の長さを計算
       const lastEvent = this.midiEvents[this.midiEvents.length - 1];
       const releaseSec = this.adsr.r / 1000.0;
       const totalSec = lastEvent.start + lastEvent.duration + releaseSec;
       const masterLen = Math.ceil(totalSec * this.sampleRate);
       const masterBuf = new Float64Array(masterLen);
 
-      // 同時発音数マップの作成（1/100秒単位で管理）
-      const polyRes = 100; // 10ms per bin
+      const polyRes = 100;
       const polyMap = new Int32Array(Math.ceil(totalSec * polyRes));
       let maxPoly = 1;
 
-      // 3. ノートを一つずつ合成しマスターへ加算
       for (let idx = 0; idx < this.midiEvents.length; idx++) {
         const ev = this.midiEvents[idx];
         const stShift = (ev.note - 60) + this.globalSemitones;
         const pitchMap = (fi, freq) => Math.pow(2, stShift / 12);
         
-        // 該当ノート長(duration)を指定して、ADSR適用済みの波形を生成
+        // Worker で該当ノートの長さとADSRを適用した波形を非同期生成
         const noteBuf = await this.synth.synthesize(
           this.analysis, pitchMap, speed, this.startTime, this.endTime, this.adsr, ev.duration, null
         );
 
-        // 加算
         const startSample = Math.floor(ev.start * this.sampleRate);
         for (let s = 0; s < noteBuf.length; s++) {
           if (startSample + s < masterLen) {
@@ -433,7 +410,6 @@ class HarmorApp {
           }
         }
 
-        // Polyphonyカウント
         const sBin = Math.floor(ev.start * polyRes);
         const eBin = Math.floor((ev.start + ev.duration + releaseSec) * polyRes);
         for (let b = sBin; b < eBin && b < polyMap.length; b++) {
@@ -441,25 +417,20 @@ class HarmorApp {
           if (polyMap[b] > maxPoly) maxPoly = polyMap[b];
         }
 
-        this._progress(0.5 + 0.5 * (idx / this.midiEvents.length));
-        await yieldToUI();
+        this._progress(idx / this.midiEvents.length);
       }
 
-      // 4. 最大同時発音数による正規化 (オートゲイン)
-      // 安全マージンを加えた値で割る（例: maxPolyが5なら全体を1/4〜1/5に下げる）
-      const gainFactor = 1.0 / Math.max(1, Math.sqrt(maxPoly)); // 完全に割ると小さすぎるので平方根を適用
+      const gainFactor = 1.0 / Math.max(1, Math.sqrt(maxPoly));
       let peak = 0;
       for (let s = 0; s < masterLen; s++) {
         masterBuf[s] *= gainFactor;
         if (Math.abs(masterBuf[s]) > peak) peak = Math.abs(masterBuf[s]);
       }
-      // ハードクリップ防止の最終正規化
       if (peak > 0.99) {
         const k = 0.95 / peak;
         for (let s = 0; s < masterLen; s++) masterBuf[s] *= k;
       }
 
-      // 5. ZIPではなく直接WAVでダウンロード
       this.exporter.download(masterBuf, this.sampleRate, 'harmor-midi-render.wav');
       this._status(`MIDI レンダリング完了 (Max Polyphony: ${maxPoly})`, 'ok');
 
@@ -471,7 +442,6 @@ class HarmorApp {
     }
   }
 
-  // --- Piano Roll ---
   _buildPianoRoll() {
     const pr = $('pianoRoll');
     pr.innerHTML = '';
@@ -557,6 +527,5 @@ class HarmorApp {
 
 function $(id) { return document.getElementById(id); }
 function formatTime(s) { const m = s/60|0; return `${m}:${String((s%60|0)).padStart(2,'0')}.${String(s*100%100|0).padStart(2,'0')}`; }
-function yieldToUI() { return new Promise(r => setTimeout(r, 0)); }
 
 window.addEventListener('DOMContentLoaded', () => { window.app = new HarmorApp(); });
