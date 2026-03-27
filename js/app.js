@@ -20,10 +20,12 @@ class HarmorApp {
     this.globalSemitones = 0;
     this.playbackSpeed = 1.0;
     this.startTime = 0; 
+    this.endTime   = 1; 
     this.synthBuffersMap = new Map(); 
 
-    // ADSR State
     this.adsr = { a: 10, d: 500, s: 100, r: 300 };
+
+    this.midiEvents = []; // parsed MIDI notes
 
     this._initRenderer();
     this._buildPianoRoll();
@@ -38,19 +40,22 @@ class HarmorApp {
       waveformCanvas:    $('waveformCanvas'),
     });
 
-    this.renderer.onSetStartTime = (t) => {
-      this.startTime = t;
-    };
+    this.renderer.onSetStartTime = (t) => { this.startTime = t; };
+    this.renderer.onSetEndTime   = (t) => { this.endTime = t; };
 
-    // マウス操作でキャンバスの視点が変わったらスライダーを追従させる
-    this.renderer.onViewChange = () => {
-      this._updateScrollSlidersFromRenderer();
-    };
+    this.renderer.onViewChange = () => { this._updateScrollSlidersFromRenderer(); };
 
+    // プレイヘッドの同期修正 (再生速度を加味して描画位置を補正)
     this.audio.onTimeUpdate = (t) => {
-      this.renderer.setPlayhead(t);
-      $('timeDisplay').textContent = formatTime(t);
+      let uiTime = t;
+      if (this.audio._src && this.audio._src.buffer === this.audio.synthBuf) {
+         const elapsedSec = (this.audio.ctx.currentTime - this.audio._startAt);
+         uiTime = this.startTime + (elapsedSec * this.playbackSpeed);
+      }
+      this.renderer.setPlayhead(uiTime);
+      $('timeDisplay').textContent = formatTime(uiTime);
     };
+    
     this.audio.onEnded = () => {
       $('playOrigBtn').classList.remove('active');
       $('playSynthBtn').classList.remove('active');
@@ -58,28 +63,38 @@ class HarmorApp {
   }
 
   _bindUI() {
-    // ---- File / Tabs / Core ----
     const fi = $('fileInput');
     $('loadBtn').addEventListener('click', () => fi.click());
     fi.addEventListener('change', e => { if (e.target.files[0]) this._loadFile(e.target.files[0]); });
+
+    const midiInput = $('midiInput');
+    $('loadMidiBtn').addEventListener('click', () => midiInput.click());
+    midiInput.addEventListener('change', e => { if(e.target.files[0]) this._loadMidi(e.target.files[0]); });
 
     $('tabSynth').addEventListener('click', () => this._switchMode('synth'));
     $('tabVocal').addEventListener('click', () => this._switchMode('vocal'));
 
     $('analyzeBtn').addEventListener('click', () => this._analyze());
 
-    // ---- Panel Toggle ----
     $('panelToggleBtn').addEventListener('click', () => {
       $('controlPanel').classList.toggle('collapsed');
       $('panelToggleBtn').classList.toggle('collapsed');
-      setTimeout(() => this._resizeCanvases(), 300); // Transition完了後にリサイズ
+      setTimeout(() => this._resizeCanvases(), 300);
     });
 
-    // ---- Sliders (Pitch, Speed) ----
-    this._bindSlider('pitchSlider', 'pitchValue', v => { this.globalSemitones = v; }, st => st >= 0 ? `+${st.toFixed(1)} st` : `${st.toFixed(1)} st`);
+    // PitchSlider: number入力に対応、step=1の整数のみ
+    const pitchSl = $('pitchSlider'), pitchNum = $('pitchNum');
+    const updatePitch = (val) => {
+      let v = parseInt(val);
+      if(isNaN(v)) return;
+      this.globalSemitones = v;
+      pitchSl.value = v; pitchNum.value = v;
+    };
+    pitchSl.addEventListener('input', e => updatePitch(e.target.value));
+    pitchNum.addEventListener('change', e => updatePitch(e.target.value));
+
     this._bindSlider('speedSlider', 'speedValue', v => { this.playbackSpeed = v; }, v => `${v.toFixed(2)}x`);
 
-    // ---- ADSR Envelope Sync ----
     const bindADSR = (key, sliderId, numId) => {
       const sl = $(sliderId), num = $(numId);
       const update = (val) => {
@@ -96,17 +111,15 @@ class HarmorApp {
     bindADSR('s', 'adsrSSlider', 'adsrSNum');
     bindADSR('r', 'adsrRSlider', 'adsrRNum');
 
-    // ---- XY Scroll & Zoom Controls ----
     this._bindScrollControls();
 
-    // ---- Vocal mode overrides ----
     $('snapCheck').addEventListener('change', e => { this.renderer.isSnapMode = e.target.checked; });
     $('showOrigF0Check').addEventListener('change', e => { this.renderer.showOrigF0 = e.target.checked; this.renderer.renderAll(); });
     $('resetF0Btn').addEventListener('click', () => { this.renderer.editedF0 = null; this.renderer.renderAll(); });
 
-    // ---- Transport / Export ----
     $('synthesizeBtn').addEventListener('click', () => this._synthesize());
     $('exportZipBtn').addEventListener('click', () => this._exportZip());
+    $('renderMidiBtn').addEventListener('click', () => this._renderMidiAndDownload());
 
     $('playOrigBtn').addEventListener('click', () => {
       this.audio.play('orig', this.startTime, this.startTime);
@@ -127,7 +140,7 @@ class HarmorApp {
     $('exportBtn').addEventListener('click', () => {
       if (this.synthData) {
         this.exporter.download(this.synthData, this.sampleRate, 'harmor-export.wav');
-        this._status('単一WAV エクスポート完了', 'ok');
+        this._status('WAV エクスポート完了', 'ok');
       }
     });
 
@@ -135,11 +148,9 @@ class HarmorApp {
     this._resizeCanvases();
   }
 
-  // --- Scroll & Zoom Controls Logic ---
   _bindScrollControls() {
     const sX = $('sliderPanX'), sY = $('sliderPanY');
 
-    // X軸パン
     sX.addEventListener('input', () => {
       if (!this.analysis) return;
       const maxT = this.analysis.duration;
@@ -149,24 +160,20 @@ class HarmorApp {
       this.renderer.setView(vs, vs + span, this.renderer.freqMin, this.renderer.freqMax);
     });
 
-    // Y軸パン (Logスケール)
     sY.addEventListener('input', () => {
       const minL = Math.log2(20), maxL = Math.log2(20000);
       const spanL = Math.log2(this.renderer.freqMax) - Math.log2(this.renderer.freqMin);
-      
-      const pct = parseFloat(sY.value) / 1000.0; // 上が1000, 下が0
+      const pct = parseFloat(sY.value) / 1000.0; 
       let fm = minL + pct * (maxL - minL - spanL);
       this.renderer.setView(this.renderer.viewStart, this.renderer.viewEnd, Math.pow(2, fm), Math.pow(2, fm + spanL));
     });
 
-    // Zoom Buttons
     const zoomX = (scale) => {
       if (!this.analysis) return;
       const span = this.renderer.viewEnd - this.renderer.viewStart;
       const center = this.renderer.viewStart + span / 2;
       const newSpan = Math.max(0.05, Math.min(this.analysis.duration, span * scale));
-      let vs = center - newSpan / 2;
-      let ve = center + newSpan / 2;
+      let vs = center - newSpan / 2; let ve = center + newSpan / 2;
       if (vs < 0) { ve -= vs; vs = 0; }
       if (ve > this.analysis.duration) { vs -= (ve - this.analysis.duration); ve = this.analysis.duration; }
       this.renderer.setView(Math.max(0, vs), Math.min(this.analysis.duration, ve), this.renderer.freqMin, this.renderer.freqMax);
@@ -179,8 +186,7 @@ class HarmorApp {
       const centerL = Math.log2(this.renderer.freqMin) + spanL / 2;
       
       const newSpanL = Math.max(this.renderer.minFreqZoomRangeL, Math.min(maxL - minL, spanL * scale));
-      let vmL = centerL - newSpanL / 2;
-      let vxL = centerL + newSpanL / 2;
+      let vmL = centerL - newSpanL / 2; let vxL = centerL + newSpanL / 2;
       if (vmL < minL) { vxL += (minL - vmL); vmL = minL; }
       if (vxL > maxL) { vmL -= (vxL - maxL); vxL = maxL; }
       
@@ -197,28 +203,19 @@ class HarmorApp {
   _updateScrollSlidersFromRenderer() {
     if (!this.analysis || !this.renderer) return;
     
-    // X Axis
     const maxT = this.analysis.duration;
     const spanT = this.renderer.viewEnd - this.renderer.viewStart;
-    if (spanT < maxT) {
-      $('sliderPanX').value = (this.renderer.viewStart / (maxT - spanT)) * 1000;
-    } else {
-      $('sliderPanX').value = 0;
-    }
+    if (spanT < maxT) $('sliderPanX').value = (this.renderer.viewStart / (maxT - spanT)) * 1000;
+    else $('sliderPanX').value = 0;
 
-    // Y Axis
     const minL = Math.log2(20), maxL = Math.log2(20000);
     const spanL = Math.log2(this.renderer.freqMax) - Math.log2(this.renderer.freqMin);
     const currL = Math.log2(this.renderer.freqMin);
     
-    if (spanL < (maxL - minL)) {
-      $('sliderPanY').value = ((currL - minL) / (maxL - minL - spanL)) * 1000;
-    } else {
-      $('sliderPanY').value = 500;
-    }
+    if (spanL < (maxL - minL)) $('sliderPanY').value = ((currL - minL) / (maxL - minL - spanL)) * 1000;
+    else $('sliderPanY').value = 500;
   }
 
-  // --- Core Helpers ---
   _bindSlider(id, displayId, onChange, fmt) {
     const sl = $(id), disp = $(displayId);
     const update = () => { const v = parseFloat(sl.value); onChange(v); disp.textContent = fmt(v); };
@@ -235,6 +232,20 @@ class HarmorApp {
     $('panelVocal').style.display = mode === 'vocal' ? 'block' : 'none';
     $('pianoRoll').style.display  = mode === 'synth' && this.synthBuffersMap.size > 0 ? 'flex' : 'none';
     if (this.analysis) this.renderer.renderAll();
+  }
+
+  // --- MIDI Load ---
+  async _loadMidi(file) {
+    try {
+      const buffer = await file.arrayBuffer();
+      this.midiEvents = MidiParser.parse(buffer);
+      $('midiInfo').textContent = `${file.name} (${this.midiEvents.length} notes)`;
+      $('midiInfo').style.color = 'var(--accent2)';
+      if (this.analysis) $('renderMidiBtn').disabled = false;
+    } catch(e) {
+      $('midiInfo').textContent = `読込失敗: ${e.message}`;
+      $('midiInfo').style.color = 'var(--err)';
+    }
   }
 
   async _loadFile(file) {
@@ -257,7 +268,9 @@ class HarmorApp {
       this.renderer.analysis  = { sampleRate: this.sampleRate, duration: decoded.duration };
       this.renderer.viewEnd   = decoded.duration;
       this.renderer.startTime = 0;
+      this.renderer.endTime   = decoded.duration;
       this.startTime = 0;
+      this.endTime = decoded.duration;
       this.renderer._drawWaveform();
       this.renderer._drawWaveformUI();
 
@@ -294,6 +307,8 @@ class HarmorApp {
 
       $('partialCountBadge').textContent = `${this.analysis.partials.length} partials`;
       $('synthesizeBtn').disabled = false;
+      if (this.midiEvents.length > 0) $('renderMidiBtn').disabled = false;
+
       this._status(`解析完了 (${this.analysis.partials.length} partials)`, 'ok');
     } catch(e) {
       this._status(`解析エラー: ${e.message}`, 'err');
@@ -323,26 +338,25 @@ class HarmorApp {
 
     try {
       const speed = this.mode === 'synth' ? this.playbackSpeed : 1.0;
-      // ADSRはシンセモードの時のみ適用
       const adsrToApply = this.mode === 'synth' ? this.adsr : null;
 
+      // 範囲指定 (startTime -> endTime)
       this.synthData = await this.synth.synthesize(
-        this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, adsrToApply, p => this._progress(p)
+        this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, this.endTime, adsrToApply, null, p => this._progress(p)
       );
 
       this.audio.setSynthData(this.synthData, this.sampleRate);
       $('playSynthBtn').disabled = false;
       $('exportBtn').disabled = false;
 
-      // 3オクターブ (C3(48) 〜 B5(83) = 計36音) バッチ生成
       if (this.mode === 'synth') {
         this._status('マルチサンプル自動生成中 (C3 - B5)…', 'info');
         this.synthBuffersMap.clear();
         
         for (let note = 48; note <= 83; note++) {
-          const stShift = (note - 60) + this.globalSemitones; // C4(60)が基準
+          const stShift = (note - 60) + this.globalSemitones; // C4(60)
           const map = getPitchMap(stShift);
-          const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, adsrToApply, null);
+          const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, this.endTime, adsrToApply, null, null);
           this.synthBuffersMap.set(note, data);
           this._progress((note - 48) / 36);
         }
@@ -351,7 +365,7 @@ class HarmorApp {
         $('exportZipBtn').disabled = false;
       }
 
-      this._status('再合成完了 — 「Synth」またはピアノロールで試聴できます', 'ok');
+      this._status('再合成完了', 'ok');
     } catch(e) {
       this._status(`エラー: ${e.message}`, 'err');
     } finally {
@@ -360,6 +374,104 @@ class HarmorApp {
     }
   }
 
+  // --- MIDI Render Logic ---
+  async _renderMidiAndDownload() {
+    if (!this.analysis || this.midiEvents.length === 0) return;
+    
+    $('renderMidiBtn').disabled = true;
+    this._status('MIDI レンダリング中 (音素生成)…', 'info');
+    this._progress(0);
+
+    try {
+      // 1. 使用されているノートだけを生成
+      const usedNotes = [...new Set(this.midiEvents.map(e => e.note))];
+      const speed = this.playbackSpeed;
+      const baseMap = new Map(); // note -> raw buffer (NO ADSR yet)
+      
+      let i = 0;
+      for (const note of usedNotes) {
+        const stShift = (note - 60) + this.globalSemitones;
+        const pitchMap = (fi, freq) => Math.pow(2, stShift / 12);
+        // 各ノートの「長さに応じた合成」を行うため、この時点では ADSR=null, duration=null で純粋な全体波形を抽出
+        // ※高速化のため、ここでは「最も長いノート」に合わせて作っておくのが理想ですが、
+        // 今回はシンプルに都度合成 (synthesize内にdurationSec引数を新設済み) を使います。
+        i++;
+        this._progress(i / (usedNotes.length * 2));
+      }
+
+      this._status('MIDI ミックス中 (ADSR付与 & オートゲイン)…', 'info');
+
+      // 2. ミックス処理
+      // 曲の長さを計算
+      const lastEvent = this.midiEvents[this.midiEvents.length - 1];
+      const releaseSec = this.adsr.r / 1000.0;
+      const totalSec = lastEvent.start + lastEvent.duration + releaseSec;
+      const masterLen = Math.ceil(totalSec * this.sampleRate);
+      const masterBuf = new Float64Array(masterLen);
+
+      // 同時発音数マップの作成（1/100秒単位で管理）
+      const polyRes = 100; // 10ms per bin
+      const polyMap = new Int32Array(Math.ceil(totalSec * polyRes));
+      let maxPoly = 1;
+
+      // 3. ノートを一つずつ合成しマスターへ加算
+      for (let idx = 0; idx < this.midiEvents.length; idx++) {
+        const ev = this.midiEvents[idx];
+        const stShift = (ev.note - 60) + this.globalSemitones;
+        const pitchMap = (fi, freq) => Math.pow(2, stShift / 12);
+        
+        // 該当ノート長(duration)を指定して、ADSR適用済みの波形を生成
+        const noteBuf = await this.synth.synthesize(
+          this.analysis, pitchMap, speed, this.startTime, this.endTime, this.adsr, ev.duration, null
+        );
+
+        // 加算
+        const startSample = Math.floor(ev.start * this.sampleRate);
+        for (let s = 0; s < noteBuf.length; s++) {
+          if (startSample + s < masterLen) {
+            masterBuf[startSample + s] += noteBuf[s];
+          }
+        }
+
+        // Polyphonyカウント
+        const sBin = Math.floor(ev.start * polyRes);
+        const eBin = Math.floor((ev.start + ev.duration + releaseSec) * polyRes);
+        for (let b = sBin; b < eBin && b < polyMap.length; b++) {
+          polyMap[b]++;
+          if (polyMap[b] > maxPoly) maxPoly = polyMap[b];
+        }
+
+        this._progress(0.5 + 0.5 * (idx / this.midiEvents.length));
+        await yieldToUI();
+      }
+
+      // 4. 最大同時発音数による正規化 (オートゲイン)
+      // 安全マージンを加えた値で割る（例: maxPolyが5なら全体を1/4〜1/5に下げる）
+      const gainFactor = 1.0 / Math.max(1, Math.sqrt(maxPoly)); // 完全に割ると小さすぎるので平方根を適用
+      let peak = 0;
+      for (let s = 0; s < masterLen; s++) {
+        masterBuf[s] *= gainFactor;
+        if (Math.abs(masterBuf[s]) > peak) peak = Math.abs(masterBuf[s]);
+      }
+      // ハードクリップ防止の最終正規化
+      if (peak > 0.99) {
+        const k = 0.95 / peak;
+        for (let s = 0; s < masterLen; s++) masterBuf[s] *= k;
+      }
+
+      // 5. ZIPではなく直接WAVでダウンロード
+      this.exporter.download(masterBuf, this.sampleRate, 'harmor-midi-render.wav');
+      this._status(`MIDI レンダリング完了 (Max Polyphony: ${maxPoly})`, 'ok');
+
+    } catch (e) {
+      this._status(`MIDI レンダリングエラー: ${e.message}`, 'err');
+    } finally {
+      $('renderMidiBtn').disabled = false;
+      this._progress(null);
+    }
+  }
+
+  // --- Piano Roll ---
   _buildPianoRoll() {
     const pr = $('pianoRoll');
     pr.innerHTML = '';
@@ -445,5 +557,6 @@ class HarmorApp {
 
 function $(id) { return document.getElementById(id); }
 function formatTime(s) { const m = s/60|0; return `${m}:${String((s%60|0)).padStart(2,'0')}.${String(s*100%100|0).padStart(2,'0')}`; }
+function yieldToUI() { return new Promise(r => setTimeout(r, 0)); }
 
 window.addEventListener('DOMContentLoaded', () => { window.app = new HarmorApp(); });

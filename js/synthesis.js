@@ -13,25 +13,27 @@ class AdditiveSynthesizer {
    * @param {Function} pitchMap  (frameIdx, origFreq) → ratio
    * @param {number}   speed     1.0 = normal, 0.0 = freeze
    * @param {number}   startSec  生成を開始する秒数
-   * @param {object}   adsr      {a: ms, d: ms, s: %, r: ms}  ※nullの場合は適用しない
+   * @param {number}   endSec    生成を終了する秒数
+   * @param {object}   adsr      {a, d, s, r} 適用するエンベロープ(ms)
+   * @param {number}   durationSec 外部指定のノート長さ（指定があればendSecの代わりに使う）
    */
-  async synthesize(analysis, pitchMap, speed = 1.0, startSec = 0, adsr = null, onProgress) {
+  async synthesize(analysis, pitchMap, speed = 1.0, startSec = 0, endSec = 0, adsr = null, durationSec = null, onProgress) {
     const { partials, numFrames, hopSize, sampleRate } = analysis;
+    
     const startFrame = Math.max(0, Math.min(numFrames - 1, Math.round(startSec * sampleRate / hopSize)));
+    const actualEndSec = durationSec !== null ? (startSec + durationSec) : endSec;
+    const endFrame = Math.max(startFrame + 1, Math.min(numFrames - 1, Math.round(actualEndSec * sampleRate / hopSize)));
 
     let out;
     if (speed <= 0.001) {
-      out = await this._synthesizeFreeze(analysis, pitchMap, startFrame, onProgress);
+      out = await this._synthesizeFreeze(analysis, pitchMap, startFrame, durationSec || 10.0, onProgress);
     } else {
-      const framesToProcess = numFrames - startFrame;
+      const framesToProcess = endFrame - startFrame;
       if (framesToProcess <= 0) return new Float64Array(0);
 
       const outFrames = Math.floor(framesToProcess / speed);
-      
-      // Releaseタイム分の余白を確保（秒換算）
       const releaseSec = adsr ? (adsr.r / 1000.0) : 0;
       const releaseSamples = Math.ceil(releaseSec * sampleRate);
-      
       const totalSamples = (outFrames + 4) * hopSize + releaseSamples;
       out = new Float64Array(totalSamples);
 
@@ -53,6 +55,7 @@ class AdditiveSynthesizer {
         for (let j = 0; j < segs.length - 1; j++) {
           const s1 = segs[j], s2 = segs[j + 1];
 
+          // 範囲外のスキップ処理
           if (s2.fi < startFrame) {
             const durSamples = s2.fi - s1.fi;
             const avgF = (s1.freq + s2.freq) * 0.5;
@@ -60,6 +63,7 @@ class AdditiveSynthesizer {
             phase = wrapPhase(phase);
             continue;
           }
+          if (s1.fi > endFrame) break;
 
           const r1 = pitchMap ? pitchMap(s1.fi, s1.freq) : 1.0;
           const r2 = pitchMap ? pitchMap(s2.fi, s2.freq) : 1.0;
@@ -99,7 +103,6 @@ class AdditiveSynthesizer {
       }
     }
 
-    // 正規化の前にADSRエンベロープを適用
     if (adsr) {
       this._applyADSR(out, sampleRate, adsr);
     }
@@ -109,10 +112,9 @@ class AdditiveSynthesizer {
     return out;
   }
 
-  async _synthesizeFreeze(analysis, pitchMap, targetFrame, onProgress) {
+  async _synthesizeFreeze(analysis, pitchMap, targetFrame, durationSec, onProgress) {
     const { partials, sampleRate } = analysis;
-    const durSec = 10.0; // フリーズループは一律10秒
-    const totalSamples = durSec * sampleRate;
+    const totalSamples = Math.floor(durationSec * sampleRate);
     const out = new Float64Array(totalSamples);
     
     const active = [];
@@ -145,12 +147,6 @@ class AdditiveSynthesizer {
     return out;
   }
 
-  /**
-   * 波形データにADSRエンベロープを直接乗算する
-   * @param {Float64Array} out 波形データ
-   * @param {number} sampleRate サンプルレート
-   * @param {object} adsr {a, d, s, r} (a, d, r は ms, s は %)
-   */
   _applyADSR(out, sampleRate, adsr) {
     const aSamples = Math.floor((adsr.a / 1000) * sampleRate);
     const dSamples = Math.floor((adsr.d / 1000) * sampleRate);
@@ -158,29 +154,22 @@ class AdditiveSynthesizer {
     const susLevel = adsr.s / 100.0;
 
     const totalLen = out.length;
-    // Releaseの開始位置は全体の末尾から rSamples 引いた地点
     const sustainEnd = Math.max(0, totalLen - rSamples);
 
     for (let i = 0; i < totalLen; i++) {
       let env = 0.0;
-
       if (i < aSamples) {
-        // Attack
         env = i / Math.max(1, aSamples);
       } else if (i < aSamples + dSamples) {
-        // Decay
         const dt = (i - aSamples) / Math.max(1, dSamples);
         env = 1.0 - (1.0 - susLevel) * dt;
       } else if (i < sustainEnd) {
-        // Sustain
         env = susLevel;
       } else {
-        // Release
         const rt = (i - sustainEnd) / Math.max(1, rSamples);
         env = susLevel * (1.0 - rt);
         if (env < 0) env = 0;
       }
-
       out[i] *= env;
     }
   }

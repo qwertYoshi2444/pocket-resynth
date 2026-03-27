@@ -14,7 +14,6 @@
     <h1>Harmor Web</h1>
     <span class="subtitle">Spectral Additive Engine</span>
     
-    <!-- モード切替タブ -->
     <div id="modeTabs">
       <button id="tabSynth" class="tab-btn active">🎹 シンセ作成モード</button>
       <button id="tabVocal" class="tab-btn">🎤 歌わせモード</button>
@@ -57,9 +56,8 @@
   <!-- ── Main ──────────────────────────────────────────────────────── -->
   <div id="mainContent">
     <div id="canvasArea">
-      <!-- Waveform (再生位置指定用) -->
-      <div id="waveformWrapper">
-        <!-- マウス操作を検知しやすくするため透過のUIキャンバスを追加 -->
+      <!-- Waveform (再生位置指定用: 左クリック=Start, 右クリック=End) -->
+      <div id="waveformWrapper" oncontextmenu="return false;">
         <canvas id="waveformCanvas"></canvas>
         <canvas id="waveformUiCanvas"></canvas>
         <div id="dropZone">
@@ -69,8 +67,6 @@
 
       <!-- Spectrogram + XY Scroll/Zoom Controls -->
       <div id="spectrogramArea">
-        
-        <!-- Y軸(周波数)コントロール -->
         <div id="controlY">
           <button id="btnZoomInY" class="zoom-btn">+</button>
           <input type="range" id="sliderPanY" min="0" max="1000" value="500" orient="vertical">
@@ -84,7 +80,6 @@
         </div>
       </div>
 
-      <!-- X軸(時間)コントロール -->
       <div id="controlX">
         <button id="btnZoomOutX" class="zoom-btn">-</button>
         <input type="range" id="sliderPanX" min="0" max="1000" value="0">
@@ -95,30 +90,28 @@
       <div id="pianoRoll" style="display:none;"></div>
     </div>
 
-    <!-- サイドパネル開閉ボタン -->
     <div id="panelToggleBtn" title="サイドパネルを開閉">▶</div>
 
     <!-- Control Panel -->
     <aside id="controlPanel">
-      <!-- 共通: Global Pitch -->
+      
+      <!-- Global Pitch Shift (整数化＆直接入力対応) -->
       <div class="panel-section">
         <h3>Global Pitch Shift</h3>
         <div class="slider-block">
           <div class="slider-header">
             <span class="label">Semitones</span>
-            <span class="value" id="pitchValue">+0.0 st</span>
+            <input type="number" id="pitchNum" value="0" min="-24" max="24" step="1" class="value-input">
           </div>
-          <input type="range" id="pitchSlider" min="-24" max="24" step="0.1" value="0">
+          <input type="range" id="pitchSlider" min="-24" max="24" step="1" value="0">
         </div>
       </div>
 
       <!-- シンセ作成モード専用パネル -->
       <div id="panelSynth" class="panel-mode-group">
         
-        <!-- ADSR Envelope -->
         <div class="panel-section">
           <h3>ADSR Envelope</h3>
-          
           <div class="adsr-row">
             <div class="adsr-label">Att</div>
             <input type="range" id="adsrASlider" min="0" max="2000" step="1" value="10">
@@ -139,7 +132,6 @@
             <input type="range" id="adsrRSlider" min="0" max="5000" step="1" value="300">
             <input type="number" id="adsrRNum" value="300" min="0" max="10000"><span>ms</span>
           </div>
-          
         </div>
 
         <div class="panel-section">
@@ -152,16 +144,24 @@
             <input type="range" id="speedSlider" min="0" max="2" step="0.05" value="1">
           </div>
           <div style="font-size:10px;color:#8b949e;margin-top:4px;line-height:1.4">
-            0.0倍にすると指定位置の波形をフリーズし、10秒間の無限ループを生成します。
+            0.0倍にするとStart位置の波形をフリーズし、10秒間の無限ループを生成します。
           </div>
         </div>
         
         <div class="panel-section" style="flex:1">
-          <h3>Multi-sample Export</h3>
+          <h3>Multi-sample / MIDI</h3>
           <p class="hint" style="margin-bottom:10px;line-height:1.4">
-            再合成を実行すると 3オクターブ分 (C3〜B5) を自動生成します。
+            「再合成」で 36音 (C3〜B5) をプレビュー生成します。
           </p>
-          <button id="exportZipBtn" disabled style="width:100%;font-size:11px">📦 36音を ZIP でダウンロード</button>
+          <button id="exportZipBtn" disabled style="width:100%;font-size:11px;margin-bottom:8px;">📦 36音を ZIP でダウンロード</button>
+          
+          <hr style="border:0;border-top:1px solid var(--border);margin:10px 0;">
+          
+          <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルから純粋なノートを抽出し、指定範囲の波形とADSRを用いて自動ミックスします。</p>
+          <button id="loadMidiBtn" style="width:100%;font-size:11px;margin-bottom:6px;">📂 MIDIファイルを選択</button>
+          <input type="file" id="midiInput" accept=".mid,.midi" hidden>
+          <span id="midiInfo" style="display:block;font-size:10px;color:#58a6ff;margin-bottom:8px;text-align:center;">未選択</span>
+          <button id="renderMidiBtn" disabled class="btn-primary" style="width:100%;font-size:11px;">💾 MIDI レンダリング (WAV出力)</button>
         </div>
       </div>
 
@@ -180,7 +180,8 @@
           <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
             <div>🖱 左ドラッグ: ピッチカーブ描画</div>
             <div>🖱 右ドラッグ / 中ドラッグ: パン移動</div>
-            <div>🖱 上部波形クリック: 再生位置指定</div>
+            <div>🖱 上部波形(左): 再生開始(Start)指定</div>
+            <div>🖱 上部波形(右): 再生終了(End)指定</div>
           </div>
         </div>
       </div>
@@ -195,7 +196,7 @@
     <button id="playSynthBtn" disabled>▶ Synth</button>
     <button id="stopBtn">■ Stop</button>
     <div class="transport-sep"></div>
-    <span style="font-size:11px;color:#8b949e;margin-right:auto">上部の波形エリアをクリックして開始位置を設定できます</span>
+    <span style="font-size:11px;color:#8b949e;margin-right:auto">波形を 左クリックでStart(緑)、右クリックでEnd(赤) を設定</span>
     <button id="exportBtn" disabled>💾 単一 WAV Export</button>
   </div>
 
@@ -209,6 +210,7 @@
 
 <!-- Scripts -->
 <script src="js/fft.js"></script>
+<script src="js/midi_parser.js"></script> <!-- 新規 -->
 <script src="js/analysis.js"></script>
 <script src="js/synthesis.js"></script>
 <script src="js/renderer.js"></script>

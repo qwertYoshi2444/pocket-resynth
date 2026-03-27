@@ -8,33 +8,31 @@ class SpectralRenderer {
     this.partC = partialCanvas;
     this.uiC   = uiCanvas;
     this.waveC = waveformCanvas;
-    this.waveUiC = document.getElementById('waveformUiCanvas'); // 新設：波形エリアのUI操作用
+    this.waveUiC = document.getElementById('waveformUiCanvas');
 
     this.analysis  = null;
     this.audioData = null;
 
-    // View boundaries
     this.viewStart = 0;
     this.viewEnd   = 1;
     this.freqMin   = 20;
     this.freqMax   = 20000;
     
-    // Zoom Limits
-    this.minFreqZoomRangeL = Math.log2(2); // 約1オクターブ分まで拡大可能に制限を緩和
+    this.minFreqZoomRangeL = Math.log2(2); 
     
     this.playhead  = 0;
     this.startTime = 0;
+    this.endTime   = 1; // 追加: 再合成の終了点
 
-    // Vocal Mode states
     this.appMode = 'synth';
     this.f0Data = null;
     this.editedF0 = null;
     this.isSnapMode = true;
     this.showOrigF0 = true;
 
-    // Callbacks
     this.onSetStartTime = null;
-    this.onViewChange = null;
+    this.onSetEndTime   = null; // 追加: 終了点コールバック
+    this.onViewChange   = null;
 
     this._colormap = this._buildColormap();
     this._bindEvents();
@@ -47,6 +45,7 @@ class SpectralRenderer {
     this.viewStart = 0;
     if (analysis && analysis.duration) {
       this.viewEnd = analysis.duration;
+      this.endTime = analysis.duration; // 初期値は曲の末尾
     }
     this.freqMin   = 20;
     this.freqMax   = 20000;
@@ -65,7 +64,7 @@ class SpectralRenderer {
   setPlayhead(t) {
     this.playhead = t;
     this._drawUI();
-    this._drawWaveformUI(); // 波形側のプレイヘッドも更新
+    this._drawWaveformUI();
   }
 
   renderAll() {
@@ -102,19 +101,25 @@ class SpectralRenderer {
       if (xi === 0) cx.moveTo(xi, (y0 + y1) / 2); else { cx.lineTo(xi, y0); cx.lineTo(xi, y1); }
     }
     cx.stroke();
-
     cx.strokeStyle = 'rgba(255,255,255,0.08)';
     cx.beginPath(); cx.moveTo(0, H/2); cx.lineTo(W, H/2); cx.stroke();
   }
 
-  // 波形エリア上のプレイヘッド・開始位置の描画
   _drawWaveformUI() {
     const cv = this.waveUiC;
     if (!cv) return;
     const cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
 
-    // Start Time (Green)
+    // 選択範囲のハイライト背景
+    if (this.startTime >= 0 && this.endTime >= 0 && this.endTime > this.startTime) {
+      const sx = Math.max(0, this._timeToX(this.startTime, W));
+      const ex = Math.min(W, this._timeToX(this.endTime, W));
+      cx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      cx.fillRect(sx, 0, ex - sx, H);
+    }
+
+    // Start Marker (Green)
     if (this.startTime >= this.viewStart && this.startTime <= this.viewEnd) {
       const sx = this._timeToX(this.startTime, W);
       cx.strokeStyle = 'rgba(29, 185, 84, 0.9)'; cx.lineWidth = 2;
@@ -123,19 +128,27 @@ class SpectralRenderer {
       cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx+6, 0); cx.lineTo(sx, 8); cx.lineTo(sx-6, 0); cx.fill();
     }
 
-    // Playhead (Red)
+    // End Marker (Red)
+    if (this.endTime >= this.viewStart && this.endTime <= this.viewEnd) {
+      const ex = this._timeToX(this.endTime, W);
+      cx.strokeStyle = 'rgba(255, 68, 68, 0.8)'; cx.lineWidth = 2;
+      cx.beginPath(); cx.moveTo(ex, 0); cx.lineTo(ex, H); cx.stroke();
+      cx.fillStyle = 'rgba(255, 68, 68, 0.8)';
+      cx.beginPath(); cx.moveTo(ex, 0); cx.lineTo(ex+6, 0); cx.lineTo(ex, 8); cx.lineTo(ex-6, 0); cx.fill();
+    }
+
+    // Playhead (Red/Orange)
     if (this.playhead >= this.viewStart && this.playhead <= this.viewEnd) {
       const xp = this._timeToX(this.playhead, W);
-      cx.strokeStyle = '#ff4444'; cx.lineWidth = 1.5;
+      cx.strokeStyle = '#ff8844'; cx.lineWidth = 1.5;
       cx.beginPath(); cx.moveTo(xp, 0); cx.lineTo(xp, H); cx.stroke();
-      cx.fillStyle = '#ff4444';
+      cx.fillStyle = '#ff8844';
       cx.beginPath(); cx.moveTo(xp-5,0); cx.lineTo(xp+5,0); cx.lineTo(xp,10); cx.fill();
     }
   }
 
   _drawSpectrogram() {
     const cv = this.specC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
-    // 背景を暗くして線の視認性を高める
     cx.fillStyle = '#05070a'; cx.fillRect(0, 0, W, H);
     if (!this.analysis || !this.analysis.spectrogram) return;
 
@@ -157,7 +170,6 @@ class SpectralRenderer {
         const freq = this._yToFreq(yi, H);
         let bi = this._nearestBandIdx(freq, spectFreqs);
         const amp = band[bi] / gMax;
-        // 背景を暗く調整 (ampToRGB内でガンマ処理)
         const [r, g, b] = this._ampToRGB(amp * 0.7); 
         const p = (yi * W + xi) * 4;
         pix[p] = r; pix[p+1] = g; pix[p+2] = b; pix[p+3] = 255;
@@ -165,12 +177,8 @@ class SpectralRenderer {
     }
     cx.putImageData(img, 0, 0);
 
-    // グリッド描画
-    if (this.appMode === 'vocal') {
-      this._drawMidiGrid(cx, W, H);
-    } else {
-      this._drawFreqGrid(cx, W, H);
-    }
+    if (this.appMode === 'vocal') this._drawMidiGrid(cx, W, H);
+    else this._drawFreqGrid(cx, W, H);
   }
 
   _nearestBandIdx(freq, bands) {
@@ -198,7 +206,6 @@ class SpectralRenderer {
 
   _drawMidiGrid(cx, W, H) {
     cx.font = '10px monospace'; cx.textAlign = 'left';
-    
     const minMidi = Math.floor(69 + 12 * Math.log2(this.freqMin / 440));
     const maxMidi = Math.ceil(69 + 12 * Math.log2(this.freqMax / 440));
 
@@ -210,21 +217,14 @@ class SpectralRenderer {
       const isBlack = [1,3,6,8,10].includes(m % 12);
       const isC = (m % 12 === 0);
 
-      // 実線ではっきりと描画（破線は使用しない）
-      if (isBlack) {
-        cx.strokeStyle = 'rgba(255, 255, 255, 0.15)'; // 黒鍵: 少し暗く
-        cx.lineWidth = 1;
-      } else {
-        cx.strokeStyle = isC ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.3)'; 
-        cx.lineWidth = isC ? 2 : 1.5; // 白鍵: 太く、C音はさらに太く
-      }
+      if (isBlack) { cx.strokeStyle = 'rgba(255, 255, 255, 0.15)'; cx.lineWidth = 1; } 
+      else { cx.strokeStyle = isC ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.3)'; cx.lineWidth = isC ? 2 : 1.5; }
 
       cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
 
       if (isC) {
         const oct = Math.floor(m / 12) - 1;
-        cx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-        cx.fillText(`C${oct}`, 3, y - 3);
+        cx.fillStyle = 'rgba(255, 255, 255, 0.8)'; cx.fillText(`C${oct}`, 3, y - 3);
       }
     }
   }
@@ -233,22 +233,18 @@ class SpectralRenderer {
     const cv = this.partC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
     if (!this.analysis || !this.analysis.partials) return;
-
     const { partials, hopSize, sampleRate } = this.analysis;
 
     for (const p of partials) {
       const hue = (p.id * 137.508) % 360;
-      cx.strokeStyle = `hsla(${hue},75%,60%,0.3)`;
-      cx.lineWidth = 1.0;
-      cx.beginPath();
-      let penDown = false;
+      cx.strokeStyle = `hsla(${hue},75%,60%,0.3)`; cx.lineWidth = 1.0;
+      cx.beginPath(); let penDown = false;
 
       for (const seg of p.segs) {
         if (seg.amp < 1e-5) { penDown = false; continue; }
         const t = seg.fi * hopSize / sampleRate;
         if (t < this.viewStart || t > this.viewEnd) continue;
-        const x = this._timeToX(t, W);
-        const y = this._freqToY(seg.freq, H);
+        const x = this._timeToX(t, W); const y = this._freqToY(seg.freq, H);
         if (!penDown) { cx.moveTo(x, y); penDown = true; } else cx.lineTo(x, y);
       }
       cx.stroke();
@@ -259,79 +255,75 @@ class SpectralRenderer {
     const cv = this.uiC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
 
-    // Playhead and StartTime are drawn on the waveform area now,
-    // but keep thin lines on spectrogram for reference.
-    if (this.startTime >= this.viewStart && this.startTime <= this.viewEnd) {
-      const sx = this._timeToX(this.startTime, W);
-      cx.strokeStyle = 'rgba(29, 185, 84, 0.4)'; cx.lineWidth = 1;
-      cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx, H); cx.stroke();
-    }
-    if (this.playhead >= this.viewStart && this.playhead <= this.viewEnd) {
-      const xp = this._timeToX(this.playhead, W);
-      cx.strokeStyle = 'rgba(255, 68, 68, 0.4)'; cx.lineWidth = 1;
-      cx.beginPath(); cx.moveTo(xp, 0); cx.lineTo(xp, H); cx.stroke();
-    }
-
-    // F0 Curve (Vocal mode)
     if (this.appMode === 'vocal' && this.analysis && this.f0Data) {
       const { hopSize, sampleRate } = this.analysis;
       if (this.showOrigF0) {
-        cx.strokeStyle = 'rgba(88, 166, 255, 0.8)'; // 青実線
-        cx.lineWidth = 2.5; 
+        cx.strokeStyle = 'rgba(88, 166, 255, 0.8)'; cx.lineWidth = 2.5; 
         this._traceCurve(cx, this.f0Data, hopSize, sampleRate, W, H);
       }
       if (this.editedF0) {
-        cx.strokeStyle = 'rgba(255, 68, 68, 1.0)'; // 赤太実線
-        cx.lineWidth = 4;
+        cx.strokeStyle = 'rgba(255, 68, 68, 1.0)'; cx.lineWidth = 4;
         this._traceCurve(cx, this.editedF0, hopSize, sampleRate, W, H);
       }
     }
   }
 
   _traceCurve(cx, f0Arr, hopSize, sampleRate, W, H) {
-    cx.beginPath();
-    let penDown = false;
+    cx.beginPath(); let penDown = false;
     for (let fi = 0; fi < f0Arr.length; fi++) {
       const f = f0Arr[fi];
       if (f < 20) { penDown = false; continue; }
       const t = fi * hopSize / sampleRate;
       if (t < this.viewStart || t > this.viewEnd) continue;
-      const x = this._timeToX(t, W);
-      const y = this._freqToY(f, H);
+      const x = this._timeToX(t, W); const y = this._freqToY(f, H);
       if (!penDown) { cx.moveTo(x, y); penDown = true; } else cx.lineTo(x, y);
     }
     cx.stroke();
   }
 
   // -----------------------------------------------------------------------
-  // 波形エリア上のイベント (再生位置の指定)
+  // Interaction
   // -----------------------------------------------------------------------
   _bindWaveformEvents() {
     const ui = this.waveUiC;
     if (!ui) return;
     
-    let dragging = false;
-    const updateTime = (e) => {
+    let draggingStart = false;
+    let draggingEnd   = false;
+
+    // 左クリック = StartTime, 右クリック = EndTime
+    const updateTime = (e, isStart) => {
       const t = this._xToTime(e.offsetX, ui.width);
-      this.startTime = Math.max(0, Math.min(t, this.analysis ? this.analysis.duration : 60));
-      if (this.onSetStartTime) this.onSetStartTime(this.startTime);
+      const clamped = Math.max(0, Math.min(t, this.analysis ? this.analysis.duration : 60));
+      
+      if (isStart) {
+        this.startTime = Math.min(clamped, this.endTime - 0.05); // Endを超えない
+        if (this.onSetStartTime) this.onSetStartTime(this.startTime);
+      } else {
+        this.endTime = Math.max(clamped, this.startTime + 0.05); // Startを下回らない
+        if (this.onSetEndTime) this.onSetEndTime(this.endTime);
+      }
       this._drawUI();
       this._drawWaveformUI();
     };
 
     ui.addEventListener('mousedown', e => {
-      if (e.button !== 0) return; // 左クリックのみ
-      dragging = true;
-      updateTime(e);
+      if (e.button === 0) { draggingStart = true; updateTime(e, true); }
+      else if (e.button === 2) { draggingEnd = true; updateTime(e, false); }
     });
-    ui.addEventListener('mousemove', e => { if (dragging) updateTime(e); });
-    ui.addEventListener('mouseup', () => { dragging = false; });
-    ui.addEventListener('mouseleave', () => { dragging = false; });
+    
+    ui.addEventListener('mousemove', e => {
+      if (draggingStart) updateTime(e, true);
+      if (draggingEnd) updateTime(e, false);
+    });
+    
+    ui.addEventListener('mouseup', () => { draggingStart = false; draggingEnd = false; });
+    ui.addEventListener('mouseleave', () => { draggingStart = false; draggingEnd = false; });
+    
+    // コンテキストメニュー無効化
+    ui.addEventListener('contextmenu', e => e.preventDefault());
   }
 
-  // -----------------------------------------------------------------------
-  // スペクトログラムエリアのイベント (ピッチ編集、パン、ズーム)
-  // -----------------------------------------------------------------------
   _bindEvents() {
     const ui = this.uiC;
     let draggingLeft = false, draggingPan = false;
@@ -342,7 +334,6 @@ class SpectralRenderer {
     let panFMinL = 0, panFMaxL = 0;
 
     ui.addEventListener('mousedown', e => {
-      // 右クリック or 中クリック -> パン移動
       if (e.button === 1 || e.button === 2) {
         draggingPan = true;
         panStartX = e.offsetX; panStartY = e.offsetY;
@@ -350,14 +341,8 @@ class SpectralRenderer {
         panFMinL = Math.log2(this.freqMin); panFMaxL = Math.log2(this.freqMax);
         return;
       }
-
-      // 左クリック -> ピッチ描画のみ (再生位置移動は波形側に移譲)
-      draggingLeft = true; 
-      prevX = e.offsetX;
-      
-      if (this.appMode === 'vocal') {
-        this._editF0(e.offsetX, e.offsetY, prevX, ui.width, ui.height);
-      }
+      draggingLeft = true; prevX = e.offsetX;
+      if (this.appMode === 'vocal') this._editF0(e.offsetX, e.offsetY, prevX, ui.width, ui.height);
     });
 
     ui.addEventListener('mousemove', e => {
@@ -381,14 +366,12 @@ class SpectralRenderer {
         
         let newFMaxL = panFMaxL + df;
         let newFMinL = panFMinL + df;
-        
         const minL = Math.log2(20), maxL = Math.log2(20000);
         
         if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
         if (newFMinL < minL) { newFMaxL -= (newFMinL - minL); newFMinL = minL; }
         
-        this.freqMax = Math.pow(2, newFMaxL);
-        this.freqMin = Math.pow(2, newFMinL);
+        this.freqMax = Math.pow(2, newFMaxL); this.freqMin = Math.pow(2, newFMinL);
 
         this.renderAll();
         if (this.onViewChange) this.onViewChange();
@@ -413,7 +396,6 @@ class SpectralRenderer {
       const scale = e.deltaY > 0 ? 1.15 : 0.87;
 
       if (e.shiftKey) {
-        // Y軸ズーム（制限を緩和）
         const f = this._yToFreq(e.offsetY, ui.height);
         const fL = Math.log2(f);
         const spanL = Math.log2(this.freqMax) - Math.log2(this.freqMin);
@@ -426,10 +408,8 @@ class SpectralRenderer {
         if (newFMinL < minL) { newFMaxL += (minL - newFMinL); newFMinL = minL; }
         if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
         
-        this.freqMin = Math.pow(2, newFMinL);
-        this.freqMax = Math.pow(2, newFMaxL);
+        this.freqMin = Math.pow(2, newFMinL); this.freqMax = Math.pow(2, newFMaxL);
       } else {
-        // X軸ズーム
         const t = this._xToTime(e.offsetX, ui.width);
         const span = this.viewEnd - this.viewStart;
         const newSpan = Math.max(0.05, Math.min(this.analysis ? this.analysis.duration : 60, span * scale));
@@ -478,7 +458,7 @@ class SpectralRenderer {
     ];
   }
   _ampToRGB(t) {
-    t = Math.max(0, Math.min(1, Math.pow(t, 0.45))); // 暗くするためガンマ等調整済み
+    t = Math.max(0, Math.min(1, Math.pow(t, 0.45))); 
     const cm = this._colormap, n = cm.length - 1;
     const pos = t * n, i0 = Math.floor(pos), i1 = Math.min(i0+1, n), f = pos - i0;
     const c0 = cm[i0], c1 = cm[i1];
