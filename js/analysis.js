@@ -1,6 +1,10 @@
 'use strict';
 /**
  * analysis.js — Spectral Analysis Engine (High Precision Rollback)
+ * 
+ * - Deterministic (Peak) トラッキングに加え、
+ * - Stochastic (Noise/Residual) の成分を 64 バンドで抽出し、
+ *   isNoise フラグ付きのパーシャルとして出力する機能を追加。
  */
 class SpectralAnalyzer {
   constructor(opts = {}) {
@@ -23,6 +27,11 @@ class SpectralAnalyzer {
 
     this._spectFreqs = this._logSpacedFreqs(20, this.sampleRate / 2, this.spectBands);
     this._spectBins  = this._spectFreqs.map(f => Math.round(f * this.fftSize / this.sampleRate));
+
+    // ノイズ（残差）抽出用バンド設定 (広帯域: 500Hz 〜 Nyquist)
+    this.noiseBands = 64;
+    this.noiseFreqs = this._logSpacedFreqs(500, this.sampleRate * 0.49, this.noiseBands);
+    this.noiseBins  = this.noiseFreqs.map(f => Math.round(f * this.fftSize / this.sampleRate));
   }
 
   async analyze(audio, onProgress) {
@@ -51,24 +60,66 @@ class SpectralAnalyzer {
       }
       this.fft.forward(this._real, this._imag);
 
+      const mag = new Float64Array(halfN);
+      for (let i = 1; i < halfN; i++) {
+        const re = this._real[i], im = this._imag[i];
+        mag[i] = Math.sqrt(re * re + im * im) * 2 / this.winSum;
+      }
+
       const band = new Float32Array(this.spectBands);
       for (let b = 0; b < this.spectBands; b++) {
         const bin = this._spectBins[b];
-        if (bin > 0 && bin < halfN) {
-          const re = this._real[bin], im = this._imag[bin];
-          band[b] = Math.sqrt(re * re + im * im) * 2 / this.winSum;
-        }
+        if (bin > 0 && bin < halfN) band[b] = mag[bin];
       }
       spectrogram.push(band);
 
-      const peaks = this._detectPeaks(this._real, this._imag);
+      // ピーク検出
+      const peaks = this._detectPeaks(this._real, this._imag, mag);
       const time  = (offset + N / 2) / sr;
-      frames.push({ fi, time, peaks });
+      
+      // Residual (ノイズ) 成分の抽出
+      // ピーク周辺のエネルギーを減衰させ、残差スペクトルを生成
+      const resMag = new Float64Array(mag);
+      for (const p of peaks) {
+        const bin = Math.round(p.bin);
+        // メインローブ周辺（Hann窓の広がり分）のエネルギーを削る
+        for(let i = Math.max(1, bin - 2); i <= Math.min(halfN - 1, bin + 2); i++) {
+          resMag[i] *= 0.05; 
+        }
+      }
+
+      // 残差エネルギーをノイズバンドに割り振る
+      const noiseAmpBand = new Float32Array(this.noiseBands);
+      for (let b = 0; b < this.noiseBands; b++) {
+        const startBin = b === 0 ? Math.round(500 * N / sr) : this.noiseBins[b-1];
+        const endBin = this.noiseBins[b];
+        let sum = 0, count = 0;
+        for (let i = startBin; i < endBin && i < halfN; i++) {
+          sum += resMag[i] * resMag[i];
+          count++;
+        }
+        // RMS平均振幅
+        noiseAmpBand[b] = count > 0 ? Math.sqrt(sum / count) : 0;
+      }
+
+      frames.push({ fi, time, peaks, noiseAmpBand });
     }
 
+    // 正弦波（ピーク）のトラッキング
     const partials = await this._trackPartials(frames, numFrames, p => {
       if (onProgress) onProgress(0.5 + p * 0.45);
     });
+
+    // ノイズバンドを特殊パーシャル (isNoise: true) として追加
+    let noiseIdCounter = 10000;
+    for (let b = 0; b < this.noiseBands; b++) {
+      const segs = [];
+      const freq = this.noiseFreqs[b];
+      for (let fi = 0; fi < numFrames; fi++) {
+        segs.push({ fi, freq, amp: frames[fi].noiseAmpBand[b], phase: 0 });
+      }
+      partials.push({ id: noiseIdCounter++, isNoise: true, segs });
+    }
 
     const f0Data = this._estimateF0(partials, numFrames);
 
@@ -85,6 +136,7 @@ class SpectralAnalyzer {
     const activeAt = Array.from({ length: numFrames }, () => []);
     
     for (const p of partials) {
+      if (p.isNoise) continue; // ノイズパーシャルはF0推定から除外
       for (const s of p.segs) {
         activeAt[s.fi].push(s);
       }
@@ -116,15 +168,15 @@ class SpectralAnalyzer {
     return smooth;
   }
 
-  _detectPeaks(real, imag) {
+  _detectPeaks(real, imag, mag) {
     const halfN = this.fftSize >> 1, sr = this.sampleRate, N = this.fftSize;
     const peaks = [];
 
     for (let i = 2; i < halfN - 2; i++) {
-      const re0 = real[i], im0 = imag[i];
-      const m0  = re0 * re0 + im0 * im0;
+      const m0 = mag[i] * mag[i] * (this.winSum / 2) * (this.winSum / 2); // Squared magnitude
 
       if (m0 <= this.thresh * this.thresh) continue;
+      
       const m_1 = real[i-1]*real[i-1] + imag[i-1]*imag[i-1];
       const m_2 = real[i-2]*real[i-2] + imag[i-2]*imag[i-2];
       const mp1 = real[i+1]*real[i+1] + imag[i+1]*imag[i+1];
@@ -145,11 +197,11 @@ class SpectralAnalyzer {
 
       const logAmp = lc - 0.25 * (lm - lr) * p;
       const amp    = Math.exp(logAmp) * 2 / this.winSum;
-      const ph0  = Math.atan2(im0, re0);
+      const ph0  = Math.atan2(imag[i], real[i]);
       const phR  = Math.atan2(imag[i+1], real[i+1]);
       const ph   = ph0 + p * unwrapAngle(phR - ph0);
 
-      peaks.push({ freq, amp, phase: ph, bin: i });
+      peaks.push({ freq, amp, phase: ph, bin: bin });
     }
 
     peaks.sort((a, b) => b.amp - a.amp);

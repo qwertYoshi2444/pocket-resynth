@@ -59,7 +59,7 @@ class HarmorApp {
       }
       this.renderer.setPlayhead(uiTime);
       $('timeDisplay').textContent = formatTime(uiTime);
-      this._drawADSR(); // 再生バー更新のため
+      this._drawADSR(); 
     };
     
     this.audio.onEnded = () => {
@@ -118,9 +118,7 @@ class HarmorApp {
 
     this._bindScrollControls();
 
-    // ──────────────────────────────────────────────────────────
     // Toolbar (Pitch Curve Editor) Bindings
-    // ──────────────────────────────────────────────────────────
     const btnBase = $('btnEditBase');
     const btnEdited = $('btnEditEdited');
     btnBase.addEventListener('click', () => { this.renderer.editTarget = 'base'; btnBase.classList.add('active'); btnEdited.classList.remove('active'); });
@@ -273,7 +271,7 @@ class HarmorApp {
     let panVStart = 0, panVEnd = 0;
 
     cv.addEventListener('mousedown', e => {
-      if (e.button === 1) { // 中クリック
+      if (e.button === 1) { 
         draggingPan = true;
         panStartX = e.offsetX;
         panVStart = this.adsrViewStart;
@@ -290,7 +288,6 @@ class HarmorApp {
         
         let newStart = panVStart - dt; let newEnd = panVEnd - dt;
         if (newStart < 0) { newEnd -= newStart; newStart = 0; }
-        if (newEnd > maxTime) { newStart -= (newEnd - maxTime); newEnd = maxTime; } // typo fixed below
         if (newEnd > maxT) { newStart -= (newEnd - maxT); newEnd = maxT; }
         
         this.adsrViewStart = Math.max(0, newStart);
@@ -475,7 +472,6 @@ class HarmorApp {
       $('playSynthBtn').disabled = false;
       $('exportBtn').disabled = false;
 
-      // 複数音書き出しのチェック確認
       if ($('multiSampleCheck').checked) {
         this._status('マルチサンプル自動生成中 (C3 - B5)…', 'info');
         this.synthBuffersMap.clear();
@@ -513,7 +509,7 @@ class HarmorApp {
     
     this._status('MIDI レンダリング中 (Workerによる音素生成)…', 'info');
     this._progress(0);
-    $('midiStemList').innerHTML = ''; // リストクリア
+    $('midiStemList').innerHTML = ''; 
 
     const getPitchMap = (baseSemitones) => {
       const baseRatio = Math.pow(2, baseSemitones / 12);
@@ -541,14 +537,14 @@ class HarmorApp {
       const totalSec = lastEvent.start + lastEvent.duration + releaseSec;
       const masterLen = Math.ceil(totalSec * this.sampleRate);
       
-      const trackBuffers = new Map(); // track -> Float64Array
-      const trackPolyMaps = new Map(); // track -> Int32Array
+      const trackBuffers = new Map(); 
+      const trackPolyMaps = new Map(); 
       
       const polyRes = 100;
 
       for (let idx = 0; idx < this.midiEvents.length; idx++) {
         const ev = this.midiEvents[idx];
-        const t = isStem ? ev.track : 0; // Stemでない場合は全部Track0へ
+        const t = isStem ? ev.track : 0; 
         
         if (!trackBuffers.has(t)) {
           trackBuffers.set(t, new Float64Array(masterLen));
@@ -604,7 +600,6 @@ class HarmorApp {
         const wavBytes = this.exporter.encodeWAV(buf, this.sampleRate);
         zip.addFile(name, wavBytes);
 
-        // 個別ダウンロードボタンの生成
         const btn = document.createElement('button');
         btn.className = 'stem-dl-btn';
         btn.innerHTML = `<span class="track-name">${isStem ? `Track ${t+1}` : 'Master Out'}</span> <span class="icon">💾 DL</span>`;
@@ -614,7 +609,6 @@ class HarmorApp {
         listContainer.appendChild(btn);
       }
 
-      // 複数ならZIPで一括DL
       if (trackBuffers.size > 1) {
         const zipData = zip.generate();
         this.exporter._triggerDownload(zipData, 'application/zip', 'harmor-midi-stems.zip');
@@ -630,7 +624,6 @@ class HarmorApp {
         });
         listContainer.appendChild(btnAll);
       } else {
-        // 1つの場合はWAVとしてそのままDL
         const [t, buf] = trackBuffers.entries().next().value;
         this.exporter.download(buf, this.sampleRate, 'harmor-midi-render.wav');
       }
@@ -654,14 +647,12 @@ class HarmorApp {
     cx.clearRect(0, 0, W, H);
 
     const { a, d, s, r } = this.adsr;
-    const susDur = 1000; // サスティン部分の仮描画幅 (ms)
+    const susDur = 1000; 
     
-    // 描画座標マッパー (ms -> px)
     const vs = this.adsrViewStart;
     const ve = this.adsrViewEnd;
     const toX = (ms) => ((ms - vs) / (ve - vs)) * W;
 
-    // グリッド線の描画 (100ms, 500ms, 1000ms間隔を動的に)
     const span = ve - vs;
     let step = 100;
     if (span > 2000) step = 500;
@@ -683,20 +674,22 @@ class HarmorApp {
       }
     }
 
-    // グラフ頂点の計算
+    // グラフのゼロ地点を H - 24 (セーフティマージン) に設定し、UIの枠外への見切れを防止
+    const baseY = H - 24;
+    const maxH  = baseY - 4; // トップの高さの余裕
+
     const t0 = 0;
     const t1 = a;
     const t2 = a + d;
     const t3 = a + d + susDur;
     const t4 = a + d + susDur + r;
 
-    const y0 = H - 1;
+    const y0 = baseY;
     const y1 = 4;
-    const y2 = H - (s / 100) * (H - 8) - 4;
+    const y2 = baseY - (s / 100) * maxH;
     const y3 = y2;
-    const y4 = H - 1;
+    const y4 = baseY;
 
-    // パス描画
     cx.beginPath();
     cx.moveTo(toX(t0), y0);
     cx.lineTo(toX(t1), y1);
@@ -708,13 +701,11 @@ class HarmorApp {
     cx.strokeStyle = '#58a6ff';
     cx.stroke();
 
-    // 塗りつぶし
     cx.lineTo(toX(t4), H);
     cx.lineTo(toX(t0), H);
     cx.fillStyle = 'rgba(88, 166, 255, 0.12)';
     cx.fill();
 
-    // 再生時のプレイヘッド (Synth再生時のみ)
     if (this.audio.isPlaying && this.audio._src && this.audio._src.buffer === this.audio.synthBuf) {
       const elapsedMs = (this.audio.ctx.currentTime - this.audio._startAt) * 1000;
       if (elapsedMs >= vs && elapsedMs <= ve) {

@@ -1,11 +1,10 @@
 'use strict';
 /**
- * worker_synth.js — Web Worker for High Precision Additive Resynthesis
+ * worker_synth.js — Web Worker for High Precision Additive & Residual Synthesis
  * 
- * - 出力WAVの長さは指定された絶対時間（durationSec あるいは endSec - startSec）に固定。
- * - Playback Speed は「オシレータの波形がどれだけ速く進むか」のみに影響するよう分離。
- * - タイムストレッチ時の計算を絶対出力サンプルインデックス基準に改修し、ドロップアウト(隙間)を排除。
- * - ADSRエンベロープは最後に、絶対時間のサンプル数に対して正確に適用。
+ * - Deterministic (Peak) 加算合成に加え、
+ * - Stochastic (Noise/Residual) 成分（高周波空気感）を位相ランダム化により帯域制限ノイズとして復元。
+ * - 出力WAVの長さは指定された絶対時間に固定し、Playback Speedの影響から分離。
  */
 
 let sampleRate = 44100;
@@ -26,17 +25,18 @@ self.onmessage = function(e) {
       
       const startFrame = Math.max(0, Math.min(numFrames - 1, Math.round(startSec * sampleRate / hopSize)));
       
-      // 出力される基本波形の長さを秒で確定（Speedに依存しない）
       const reqDurationSec = durationSec !== null ? durationSec : Math.max(0.1, endSec - startSec);
       const reqBaseSamples = Math.floor(reqDurationSec * sampleRate);
 
-      // リリース時間（Speedに依存しない）
       const releaseSec = adsr ? (adsr.r / 1000.0) : 0;
       const releaseSamples = Math.ceil(releaseSec * sampleRate);
       
       const totalSamples = reqBaseSamples + releaseSamples;
       let outBuffer = new Float64Array(totalSamples);
       const twoPi = 2 * Math.PI;
+
+      // Noise Phase Randomization 用 (帯域幅の概算)
+      const noiseBandwidthFactor = 0.5;
 
       // 0.0倍 (Freeze) の処理
       if (speed <= 0.001) {
@@ -45,24 +45,32 @@ self.onmessage = function(e) {
           const segs = partials[i].segs;
           for (let j = 0; j < segs.length; j++) {
             if (Math.abs(segs[j].fi - startFrame) <= 2 && segs[j].amp > 1e-4) {
-              active.push(segs[j]);
+              active.push({ p: partials[i], seg: segs[j] });
               break;
             }
           }
         }
 
         for (let i = 0; i < active.length; i++) {
-          const p = active[i];
-          const ratio = pitchRatioArr[p.fi] || 1.0;
-          const f = Math.min(p.freq * ratio, sampleRate * 0.49);
+          const item = active[i];
+          const seg = item.seg;
+          const isNoise = item.p.isNoise;
+
+          const ratio = pitchRatioArr[seg.fi] || 1.0;
+          // ノイズ成分も一応ピッチシフトに追従させる
+          const f = Math.min(seg.freq * ratio, sampleRate * 0.49);
           const inc = twoPi * f / sampleRate;
-          const a = p.amp;
+          const a = seg.amp;
           
-          let phase = p.phase;
+          let phase = seg.phase;
+          const phaseJitter = isNoise ? (twoPi * f * noiseBandwidthFactor / sampleRate) : 0;
+
           for (let s = 0; s < totalSamples; s++) {
             outBuffer[s] += a * Math.sin(phase);
             phase += inc;
+            if (isNoise) phase += (Math.random() * 2 - 1) * phaseJitter;
             if (phase > Math.PI) phase -= twoPi;
+            else if (phase < -Math.PI) phase += twoPi;
           }
         }
 
@@ -74,7 +82,9 @@ self.onmessage = function(e) {
         for (let i = 0; i < partials.length; i++) {
           if (i % BATCH === 0) self.postMessage({ type: 'PROGRESS', value: i / partials.length });
           
-          const segs = partials[i].segs;
+          const p = partials[i];
+          const isNoise = p.isNoise;
+          const segs = p.segs;
           if (segs.length < 2) continue;
           
           let phase = segs[0].phase || 0;
@@ -82,12 +92,9 @@ self.onmessage = function(e) {
           let lastFreq = 0;
           let lastAmp = 0;
 
-          // 絶対出力サンプルインデックス基準のループ
           for (let j = 0; j < segs.length - 1; j++) {
             const s1 = segs[j], s2 = segs[j + 1];
 
-            // 現在のセグメントが出力時間にマッピングされる開始・終了サンプル
-            // speed > 1 なら早く終わり、speed < 1 なら遅く終わる
             const s1OutTime = (s1.fi - startFrame) * hopSize / sampleRate / speed;
             const s2OutTime = (s2.fi - startFrame) * hopSize / sampleRate / speed;
             
@@ -95,18 +102,14 @@ self.onmessage = function(e) {
             const endSample = Math.floor(s2OutTime * sampleRate);
 
             if (endSample < 0) {
-              // 再生開始前のセグメント（位相だけ進める）
-              const durSamples = s2.fi - s1.fi; // オリジナル時間ベースで進める
+              const durSamples = s2.fi - s1.fi; 
               const avgF = (s1.freq + s2.freq) * 0.5;
               phase += twoPi * avgF / sampleRate * durSamples * hopSize;
               while (phase > Math.PI) phase -= twoPi;
               while (phase < -Math.PI) phase += twoPi;
               continue;
             }
-            if (startSample >= reqBaseSamples) {
-              // 要求された波形長を超えた場合は描画ストップ
-              break;
-            }
+            if (startSample >= reqBaseSamples) break;
 
             const r1 = pitchRatioArr[s1.fi] || 1.0;
             const r2 = pitchRatioArr[s2.fi] || 1.0;
@@ -136,31 +139,42 @@ self.onmessage = function(e) {
                 lastAmp = currA;
               }
               phase += twoPi * currF / sampleRate;
+              
+              if (isNoise) {
+                // ノイズ帯域幅に応じた位相ランダマイズ
+                const jitter = twoPi * currF * noiseBandwidthFactor / sampleRate;
+                phase += (Math.random() * 2 - 1) * jitter;
+              }
+
               if (phase > Math.PI) phase -= twoPi;
+              else if (phase < -Math.PI) phase += twoPi;
               
               currF += fStep;
               currA += aStep;
             }
           }
 
-          // フリーズ延長（Playback Speed が速すぎて指定時間より前に波形が尽きた場合）
-          // ＆ リリース領域 (reqBaseSamples以降) への延長
+          // フリーズ＆リリース延長
           if (lastWrittenSample >= 0 && lastAmp > 1e-5) {
             const extendSamples = totalSamples - 1 - lastWrittenSample;
             const inc = twoPi * lastFreq / sampleRate;
+            const jitter = isNoise ? (twoPi * lastFreq * noiseBandwidthFactor / sampleRate) : 0;
+            
             for (let s = 1; s <= extendSamples; s++) {
               const idx = lastWrittenSample + s;
               if (idx < totalSamples) {
                 outBuffer[idx] += lastAmp * Math.sin(phase);
               }
               phase += inc;
+              if (isNoise) phase += (Math.random() * 2 - 1) * jitter;
               if (phase > Math.PI) phase -= twoPi;
+              else if (phase < -Math.PI) phase += twoPi;
             }
           }
         }
       }
 
-      // ADSR エンベロープの適用（絶対時間に対して適用）
+      // ADSR エンベロープ
       if (adsr) {
         const aSamples = Math.floor((adsr.a / 1000) * sampleRate);
         const dSamples = Math.floor((adsr.d / 1000) * sampleRate);
@@ -176,7 +190,6 @@ self.onmessage = function(e) {
           } else if (i < reqBaseSamples) {
             env = susLevel;
           } else {
-            // リリース区間
             const rt = (i - reqBaseSamples) / Math.max(1, releaseSamples);
             env = susLevel * (1.0 - rt);
             if (env < 0) env = 0;

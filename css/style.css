@@ -22,12 +22,13 @@
 }
 
 html, body {
+  /* height: 100vh から 100% に変更し、スマホのURLバー等によるはみ出しを防止 */
   height: 100%; width: 100%; background: var(--bg0); color: var(--text0);
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   font-size: 13px; overflow: hidden;
 }
 
-#app { display: flex; flex-direction: column; height: 100vh; width: 100vw; }
+#app { display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; }
 
 /* ── Header ── */
 #header {
@@ -87,11 +88,12 @@ select:focus, input:focus { border-color: var(--accent); }
 }
 
 /* ── Main content ── */
-#mainContent { flex: 1; display: flex; flex-direction: row; overflow: hidden; }
+/* min-height: 0, min-width: 0 を追加しFlexboxの押し出し破綻を防ぐ */
+#mainContent { flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0; min-width: 0; }
 
-#canvasArea { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg0); }
+#canvasArea { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg0); min-height: 0; min-width: 0; }
 
-#waveformWrapper { height: var(--waveform-h); flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; }
+#waveformWrapper { height: var(--waveform-h); flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; min-height: 0; min-width: 0; }
 #waveformCanvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; z-index: 1; }
 #waveformUiCanvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; z-index: 2; cursor: crosshair; }
 #dropZone { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; pointer-events: none; }
@@ -102,27 +104,27 @@ select:focus, input:focus { border-color: var(--accent); }
   display: flex; align-items: center; padding: 0 12px; flex-shrink: 0;
 }
 
-#spectrogramArea { flex: 1; display: flex; flex-direction: row; overflow: hidden; }
-#spectrogramWrapper { flex: 1; position: relative; overflow: hidden; background: #000; }
+#spectrogramArea { flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0; min-width: 0; }
+#spectrogramWrapper { flex: 1; position: relative; overflow: hidden; background: #000; min-height: 0; min-width: 0; }
 #spectrogramWrapper canvas { position: absolute; inset: 0; display: block; }
 #spectrogramCanvas { z-index: 1; }
 #partialCanvas     { z-index: 2; pointer-events: none; }
 #uiCanvas          { z-index: 3; cursor: crosshair; }
 
 #controlY { width: 24px; background: var(--bg1); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 2px 0; }
-#controlX { height: 24px; background: var(--bg1); border-top: 1px solid var(--border); display: flex; flex-direction: row; align-items: center; padding: 0 2px; }
+#controlX { height: 24px; background: var(--bg1); border-top: 1px solid var(--border); display: flex; flex-direction: row; align-items: center; padding: 0 2px; flex-shrink: 0; }
 
 /* ADSR Area */
-#adsrWrapper { height: 90px; flex-shrink: 0; border-top: 1px solid var(--border); background: var(--bg0); display: flex; flex-direction: column; }
+#adsrWrapper { height: 90px; flex-shrink: 0; border-top: 1px solid var(--border); background: var(--bg0); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 #adsrCanvas { flex: 1; width: 100% !important; display: block; cursor: crosshair; }
-#controlAdsrX { height: 24px; background: var(--bg1); border-top: 1px solid var(--border); display: flex; flex-direction: row; align-items: center; padding: 0 2px; }
+#controlAdsrX { height: 24px; background: var(--bg1); border-top: 1px solid var(--border); display: flex; flex-direction: row; align-items: center; padding: 0 2px; flex-shrink: 0; }
 
 .zoom-btn { width: 20px; height: 20px; padding: 0; font-size: 14px; font-weight: bold; background: var(--bg2); border: 1px solid var(--border); color: var(--text1); display: flex; align-items: center; justify-content: center; }
 .zoom-btn:hover { color: var(--text0); background: var(--bg3); }
 #sliderPanY { flex: 1; width: 20px; margin: 4px 0; -webkit-appearance: slider-vertical; appearance: slider-vertical; writing-mode: bt-lr; }
 #sliderPanX, #sliderPanAdsrX { flex: 1; height: 20px; margin: 0 4px; }
 
-#pianoRoll { height: 80px; flex-shrink: 0; border-top: 1px solid var(--border); background: #111; overflow-x: auto; display: flex; }
+#pianoRoll { height: 80px; flex-shrink: 0; border-top: 1px solid var(--border); background: #111; overflow-x: auto; display: flex; min-height: 0; min-width: 0; }
 .pr-key { flex: 1; min-width: 28px; border-right: 1px solid #000; position: relative; cursor: pointer; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 6px; font-size: 10px; font-weight: bold; transition: background 0.05s; user-select: none; }
 .pr-key.white { background: #e0e0e0; color: #333; }
 .pr-key.white:hover { background: #fff; }
@@ -130,7 +132,7 @@ select:focus, input:focus { border-color: var(--accent); }
 .pr-key.black:hover { background: #3a3a3a; }
 .pr-key.playing { background: var(--accent) !important; color: #000 !important; }
 
-#panelToggleBtn { width: 16px; background: var(--bg2); border-left: 1px solid var(--border); border-right: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--text1); cursor: pointer; user-select: none; transition: 0.2s; }
+#panelToggleBtn { width: 16px; background: var(--bg2); border-left: 1px solid var(--border); border-right: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--text1); cursor: pointer; user-select: none; transition: 0.2s; flex-shrink: 0; }
 #panelToggleBtn:hover { background: var(--bg3); color: var(--text0); }
 #panelToggleBtn.collapsed { transform: rotate(180deg); }
 
