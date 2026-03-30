@@ -24,11 +24,15 @@ class SpectralRenderer {
     this.startTime = 0;
     this.endTime   = 1; 
 
-    this.appMode = 'synth';
-    this.f0Data = null;
-    this.editedF0 = null;
+    // ピッチ編集用データ構造
+    this.f0Data = null;     // オリジナルの解析データ (不変)
+    this.baseF0 = null;     // ユーザーが編集可能なベースライン
+    this.editedF0 = null;   // ベースラインに対する追加補正 (0 = 補正なし)
+    
     this.isSnapMode = true;
-    this.showOrigF0 = true;
+    this.showBaseF0 = true;
+    this.editTarget = 'edited'; // 'base' or 'edited'
+    this.isEraseMode = false;
 
     this.onSetStartTime = null;
     this.onSetEndTime   = null; 
@@ -50,6 +54,18 @@ class SpectralRenderer {
     this.freqMin   = 20;
     this.freqMax   = 20000;
     this.startTime = 0;
+    
+    // ピッチデータの初期化
+    if (analysis && analysis.f0Data) {
+      this.f0Data = analysis.f0Data;
+      this.baseF0 = new Float32Array(this.f0Data);
+      this.editedF0 = new Float32Array(this.f0Data.length);
+    } else {
+      this.f0Data = null;
+      this.baseF0 = null;
+      this.editedF0 = null;
+    }
+    
     this.renderAll();
   }
 
@@ -170,8 +186,9 @@ class SpectralRenderer {
     }
     cx.putImageData(img, 0, 0);
 
-    if (this.appMode === 'vocal') this._drawMidiGrid(cx, W, H);
-    else this._drawFreqGrid(cx, W, H);
+    // 常に周波数グリッドとMIDIグリッドをうっすら重ねる
+    this._drawFreqGrid(cx, W, H);
+    this._drawMidiGrid(cx, W, H);
   }
 
   _nearestBandIdx(freq, bands) {
@@ -210,15 +227,16 @@ class SpectralRenderer {
       const isBlack = [1,3,6,8,10].includes(m % 12);
       const isC = (m % 12 === 0);
 
-      if (isBlack) { cx.strokeStyle = 'rgba(255, 255, 255, 0.15)'; cx.lineWidth = 1; } 
-      else { cx.strokeStyle = isC ? 'rgba(255, 255, 255, 0.6)' : 'rgba(255, 255, 255, 0.3)'; cx.lineWidth = isC ? 2 : 1.5; }
+      // MIDIグリッドは控えめに描画
+      if (isBlack) { cx.strokeStyle = 'rgba(255, 255, 255, 0.05)'; cx.lineWidth = 1; } 
+      else { cx.strokeStyle = isC ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)'; cx.lineWidth = isC ? 1.5 : 1; }
 
       cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
 
       if (isC) {
         const oct = Math.floor(m / 12) - 1;
-        cx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-        cx.fillText(`C${oct}`, 3, y - 3);
+        cx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        cx.fillText(`C${oct}`, W - 20, y - 3);
       }
     }
   }
@@ -250,24 +268,27 @@ class SpectralRenderer {
     const cv = this.uiC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
     cx.clearRect(0, 0, W, H);
 
-    if (this.appMode === 'vocal' && this.analysis && this.f0Data) {
+    if (this.analysis && this.f0Data) {
       const { hopSize, sampleRate } = this.analysis;
-      if (this.showOrigF0) {
+      if (this.showBaseF0 && this.baseF0) {
         cx.strokeStyle = 'rgba(88, 166, 255, 0.8)'; cx.lineWidth = 2.5; 
-        this._traceCurve(cx, this.f0Data, hopSize, sampleRate, W, H);
+        this._traceCurve(cx, this.baseF0, hopSize, sampleRate, W, H, true);
       }
       if (this.editedF0) {
         cx.strokeStyle = 'rgba(255, 68, 68, 1.0)'; cx.lineWidth = 4;
-        this._traceCurve(cx, this.editedF0, hopSize, sampleRate, W, H);
+        this._traceCurve(cx, this.editedF0, hopSize, sampleRate, W, H, false);
       }
     }
   }
 
-  _traceCurve(cx, f0Arr, hopSize, sampleRate, W, H) {
+  _traceCurve(cx, f0Arr, hopSize, sampleRate, W, H, isBase) {
     cx.beginPath(); let penDown = false;
     for (let fi = 0; fi < f0Arr.length; fi++) {
       const f = f0Arr[fi];
+      // editedF0 の場合、0 は未編集を意味するのでスキップ
+      if (isBase === false && f === 0) { penDown = false; continue; }
       if (f < 20) { penDown = false; continue; }
+
       const t = fi * hopSize / sampleRate;
       if (t < this.viewStart || t > this.viewEnd) continue;
       const x = this._timeToX(t, W); const y = this._freqToY(f, H);
@@ -318,7 +339,8 @@ class SpectralRenderer {
 
   _bindEvents() {
     const ui = this.uiC;
-    let draggingLeft = false, draggingPan = false;
+    let draggingEdit = false, draggingPan = false;
+    let dragButton = -1;
     let prevX = 0;
     
     let panStartX = 0, panStartY = 0;
@@ -326,15 +348,21 @@ class SpectralRenderer {
     let panFMinL = 0, panFMaxL = 0;
 
     ui.addEventListener('mousedown', e => {
-      if (e.button === 1 || e.button === 2) {
+      // 中ボタン (ホイールクリック) はパン移動専用
+      if (e.button === 1) {
         draggingPan = true;
         panStartX = e.offsetX; panStartY = e.offsetY;
         panVStart = this.viewStart; panVEnd = this.viewEnd;
         panFMinL = Math.log2(this.freqMin); panFMaxL = Math.log2(this.freqMax);
         return;
       }
-      draggingLeft = true; prevX = e.offsetX;
-      if (this.appMode === 'vocal') this._editF0(e.offsetX, e.offsetY, prevX, ui.width, ui.height);
+      // 左クリック・右クリックはピッチ編集
+      if (e.button === 0 || e.button === 2) {
+        draggingEdit = true;
+        dragButton = e.button;
+        prevX = e.offsetX;
+        this._editCurve(e.offsetX, e.offsetY, prevX, dragButton, ui.width, ui.height);
+      }
     });
 
     ui.addEventListener('mousemove', e => {
@@ -367,18 +395,18 @@ class SpectralRenderer {
         return;
       }
 
-      if (draggingLeft && this.appMode === 'vocal') {
-        this._editF0(e.offsetX, e.offsetY, prevX, ui.width, ui.height);
+      if (draggingEdit) {
+        this._editCurve(e.offsetX, e.offsetY, prevX, dragButton, ui.width, ui.height);
         prevX = e.offsetX;
       }
     });
 
     ui.addEventListener('mouseup', e => {
-      if (e.button === 1 || e.button === 2) { draggingPan = false; return; }
-      if (draggingLeft) draggingLeft = false;
+      if (e.button === 1) { draggingPan = false; return; }
+      if (e.button === 0 || e.button === 2) draggingEdit = false;
     });
 
-    ui.addEventListener('mouseleave', () => { draggingLeft = false; draggingPan = false; });
+    ui.addEventListener('mouseleave', () => { draggingEdit = false; draggingPan = false; });
 
     ui.addEventListener('wheel', e => {
       e.preventDefault();
@@ -412,14 +440,19 @@ class SpectralRenderer {
     }, { passive: false });
   }
 
-  _editF0(x, y, pX, W, H) {
-    if (!this.analysis || !this.f0Data) return;
-    if (!this.editedF0) this.editedF0 = new Float32Array(this.f0Data);
+  _editCurve(x, y, pX, button, W, H) {
+    if (!this.analysis || !this.f0Data || !this.baseF0) return;
+    if (!this.editedF0) this.editedF0 = new Float32Array(this.f0Data.length);
+
+    let target = this.editTarget;
+    // 右ドラッグの場合は PC であれば base を編集するショートカット
+    if (button === 2 && target === 'edited') target = 'base';
 
     const { hopSize, sampleRate } = this.analysis;
     let freq = this._yToFreq(y, H);
 
-    if (this.isSnapMode) {
+    // スナップ処理 (消しゴムモード時は不要)
+    if (this.isSnapMode && !this.isEraseMode) {
       const midi = 69 + 12 * Math.log2(freq / 440);
       freq = 440 * Math.pow(2, (Math.round(midi) - 69) / 12);
     }
@@ -430,7 +463,15 @@ class SpectralRenderer {
     const sFi = Math.min(fi0, fi1), eFi = Math.max(fi0, fi1);
 
     for (let i = sFi; i <= eFi; i++) {
-      if (i >= 0 && i < this.editedF0.length) this.editedF0[i] = freq;
+      if (i >= 0 && i < this.baseF0.length) {
+        if (this.isEraseMode) {
+           if (target === 'base') this.baseF0[i] = this.f0Data[i];
+           if (target === 'edited') this.editedF0[i] = 0;
+        } else {
+           if (target === 'base') this.baseF0[i] = freq;
+           if (target === 'edited') this.editedF0[i] = freq;
+        }
+      }
     }
     this._drawUI();
   }

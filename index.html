@@ -13,13 +13,6 @@
   <header id="header">
     <h1>Harmor Web</h1>
     <span class="subtitle">Spectral Additive Engine</span>
-    
-    <!-- モード切替タブ (横スクロール対応) -->
-    <div id="modeTabs">
-      <button id="tabSynth" class="tab-btn active">🎹 シンセ作成モード</button>
-      <button id="tabVocal" class="tab-btn">🎤 ピッチ補正モード</button>
-    </div>
-
     <span id="fileInfo">— ファイル未読み込み —</span>
   </header>
 
@@ -28,7 +21,6 @@
   <div id="toolbar">
     <div class="toolbar-group">
       <button id="loadBtn" class="btn-primary">📂 Load Audio</button>
-      <!-- iOS等でグレーアウトしないよう拡張子を明記 -->
       <input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.aac" hidden>
     </div>
 
@@ -53,7 +45,12 @@
     <button id="analyzeBtn" disabled>🔬 解析</button>
     <span id="partialCountBadge">— partials</span>
 
-    <button id="synthesizeBtn" disabled class="btn-primary" style="margin-left:auto">⚡ 再合成</button>
+    <div class="toolbar-group" style="margin-left:auto; margin-right:8px;">
+      <label style="color:#e6edf3;font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;">
+        <input type="checkbox" id="multiSampleCheck">複数音書き出し(C3-B5)
+      </label>
+    </div>
+    <button id="synthesizeBtn" disabled class="btn-primary">⚡ 再合成</button>
   </div>
 
   <!-- ── Main ──────────────────────────────────────────────────────── -->
@@ -89,7 +86,10 @@
         <button id="btnZoomInX" class="zoom-btn">+</button>
       </div>
 
-      <!-- ピアノロール (Synthモード専用) -->
+      <!-- ADSRプレビューキャンバス -->
+      <canvas id="adsrCanvas" height="60" style="width:100%; border-top:1px solid var(--border); background:#05070a; display:block; flex-shrink:0;"></canvas>
+
+      <!-- ピアノロール (複数音生成時表示) -->
       <div id="pianoRoll" style="display:none;"></div>
     </div>
 
@@ -98,7 +98,7 @@
     <!-- Control Panel -->
     <aside id="controlPanel">
       
-      <!-- 共通: Global Pitch Shift -->
+      <!-- Global Pitch Shift -->
       <div class="panel-section">
         <h3>Global Pitch Shift</h3>
         <div class="slider-block">
@@ -110,7 +110,7 @@
         </div>
       </div>
 
-      <!-- 共通: Playback Speed -->
+      <!-- Playback Speed -->
       <div class="panel-section">
         <h3>Playback Speed</h3>
         <div class="slider-block">
@@ -125,70 +125,77 @@
         </div>
       </div>
 
-      <!-- シンセ作成モード専用パネル -->
-      <div id="panelSynth" class="panel-mode-group">
-        
-        <div class="panel-section">
-          <h3>ADSR Envelope</h3>
-          <div class="adsr-row">
-            <div class="adsr-label">Att</div>
-            <input type="range" id="adsrASlider" min="0" max="2000" step="1" value="10">
-            <input type="number" id="adsrANum" value="10" min="0" max="10000"><span>ms</span>
-          </div>
-          <div class="adsr-row">
-            <div class="adsr-label">Dec</div>
-            <input type="range" id="adsrDSlider" min="0" max="2000" step="1" value="500">
-            <input type="number" id="adsrDNum" value="500" min="0" max="10000"><span>ms</span>
-          </div>
-          <div class="adsr-row">
-            <div class="adsr-label">Sus</div>
-            <input type="range" id="adsrSSlider" min="0" max="100" step="1" value="100">
-            <input type="number" id="adsrSNum" value="100" min="0" max="100"><span>%</span>
-          </div>
-          <div class="adsr-row">
-            <div class="adsr-label">Rel</div>
-            <input type="range" id="adsrRSlider" min="0" max="5000" step="1" value="300">
-            <input type="number" id="adsrRNum" value="300" min="0" max="10000"><span>ms</span>
-          </div>
+      <!-- Pitch Curve Editor -->
+      <div class="panel-section">
+        <h3>Pitch Curve Editor</h3>
+        <div style="margin-bottom:8px; display:flex; flex-direction:column; gap:6px;">
+          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+            <input type="radio" name="editTarget" id="radioEditBase" value="base"> 推定カーブを編集
+          </label>
+          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+            <input type="radio" name="editTarget" id="radioEditEdited" value="edited" checked> 補正後カーブを編集
+          </label>
         </div>
         
-        <div class="panel-section" style="flex:1">
-          <h3>Multi-sample / MIDI</h3>
-          <p class="hint" style="margin-bottom:10px;line-height:1.4">
-            「再合成」で 36音 (C3〜B5) をプレビュー生成します。
-          </p>
-          <button id="exportZipBtn" disabled style="width:100%;font-size:11px;margin-bottom:8px;">📦 36音を ZIP でダウンロード</button>
-          
-          <hr style="border:0;border-top:1px solid var(--border);margin:10px 0;">
-          
-          <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルからノートを抽出し、指定範囲の波形とADSRを用いて自動ミックスします。</p>
-          <button id="loadMidiBtn" style="width:100%;font-size:11px;margin-bottom:6px;">📂 MIDIファイルを選択</button>
-          <!-- iOS等でグレーアウトしないよう拡張子を明記 -->
-          <input type="file" id="midiInput" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
-          <span id="midiInfo" style="display:block;font-size:10px;color:#58a6ff;margin-bottom:8px;text-align:center;">未選択</span>
-          <button id="renderMidiBtn" disabled class="btn-primary" style="width:100%;font-size:11px;">💾 MIDI レンダリング (WAV出力)</button>
+        <div style="margin-bottom:12px; display:flex; flex-direction:column; gap:6px;">
+          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" id="eraseCheck"> なぞった部分をリセット (消しゴム)
+          </label>
+          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" id="snapCheck" checked> 12音スナップ (半音吸着)
+          </label>
+          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+            <input type="checkbox" id="showBaseF0Check" checked> 推定ピッチカーブ(青)を表示
+          </label>
+        </div>
+        
+        <button id="resetBaseBtn" style="width:100%;font-size:11px;margin-bottom:6px;">推定カーブを全リセット</button>
+        <button id="resetEditedBtn" style="width:100%;font-size:11px;">補正後カーブを全リセット</button>
+        
+        <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
+          <div>🖱 左ドラッグ: 選択中のカーブを描画</div>
+          <div>🖱 右ドラッグ: 推定カーブを描画(PC専用)</div>
+          <div>🖱 中ドラッグ: パン移動(XYスクロール)</div>
         </div>
       </div>
 
-      <!-- ピッチ補正モード専用パネル -->
-      <div id="panelVocal" class="panel-mode-group" style="display:none;">
-        <div class="panel-section" style="flex:1">
-          <h3>Pitch Curve Editor</h3>
-          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12px;color:#e6edf3;cursor:pointer">
-            <input type="checkbox" id="snapCheck" checked> 12音スナップ (半音吸着)
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;margin-bottom:12px;font-size:12px;color:#e6edf3;cursor:pointer">
-            <input type="checkbox" id="showOrigF0Check" checked> 推定ピッチカーブ(青)を表示
-          </label>
-          <button id="resetF0Btn" style="width:100%;font-size:11px">描画リセット</button>
-          
-          <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
-            <div>🖱 左ドラッグ: ピッチカーブ描画</div>
-            <div>🖱 右 / 中ドラッグ: パン移動</div>
-            <div>🖱 上部波形(左): 再生開始(Start)</div>
-            <div>🖱 上部波形(右): 再生終了(End)</div>
-          </div>
+      <!-- ADSR Envelope -->
+      <div class="panel-section">
+        <h3>ADSR Envelope</h3>
+        <div class="adsr-row">
+          <div class="adsr-label">Att</div>
+          <input type="range" id="adsrASlider" min="0" max="2000" step="1" value="10">
+          <input type="number" id="adsrANum" value="10" min="0" max="10000"><span>ms</span>
         </div>
+        <div class="adsr-row">
+          <div class="adsr-label">Dec</div>
+          <input type="range" id="adsrDSlider" min="0" max="2000" step="1" value="500">
+          <input type="number" id="adsrDNum" value="500" min="0" max="10000"><span>ms</span>
+        </div>
+        <div class="adsr-row">
+          <div class="adsr-label">Sus</div>
+          <input type="range" id="adsrSSlider" min="0" max="100" step="1" value="100">
+          <input type="number" id="adsrSNum" value="100" min="0" max="100"><span>%</span>
+        </div>
+        <div class="adsr-row">
+          <div class="adsr-label">Rel</div>
+          <input type="range" id="adsrRSlider" min="0" max="5000" step="1" value="300">
+          <input type="number" id="adsrRNum" value="300" min="0" max="10000"><span>ms</span>
+        </div>
+      </div>
+      
+      <!-- Multi-sample / MIDI -->
+      <div class="panel-section" style="flex:1">
+        <h3>Multi-sample / MIDI</h3>
+        <button id="exportZipBtn" disabled style="width:100%;font-size:11px;margin-bottom:8px;">📦 36音を ZIP でダウンロード</button>
+        
+        <hr style="border:0;border-top:1px solid var(--border);margin:10px 0;">
+        
+        <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルからノートを抽出し、指定範囲の波形とADSRを用いて自動ミックスします。</p>
+        <button id="loadMidiBtn" style="width:100%;font-size:11px;margin-bottom:6px;">📂 MIDIファイルを選択</button>
+        <input type="file" id="midiInput" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
+        <span id="midiInfo" style="display:block;font-size:10px;color:#58a6ff;margin-bottom:8px;text-align:center;">未選択</span>
+        <button id="renderMidiBtn" disabled class="btn-primary" style="width:100%;font-size:11px;">💾 MIDI レンダリング (WAV出力)</button>
       </div>
     </aside>
   </div>
