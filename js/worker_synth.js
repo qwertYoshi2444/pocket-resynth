@@ -1,8 +1,8 @@
 'use strict';
 /**
- * worker_synth.js — Web Worker for Additive Resynthesis
+ * worker_synth.js — Web Worker for High Precision Additive Resynthesis
  * 
- * - Math.sin を廃止し、4096サイズの Wavetable を参照。
+ * - Wavetableを廃止し、精度の高い Math.sin を使用。
  * - Release (Rel) が指定された場合、元の Partial が途切れても最終セグメントの
  *   Sustain レベルを維持したままサイン波を延長し、プツ音を防ぐ。
  * - 生成された波形は ArrayBuffer として Transferable Object でメインスレッドへ返却。
@@ -10,14 +10,6 @@
 
 let sampleRate = 44100;
 let hopSize = 512;
-
-// 1. Wavetable (LUT) の初期化
-const WAVE_TBL_SIZE = 4096;
-const WAVE_TBL_MASK = WAVE_TBL_SIZE - 1;
-const waveTable = new Float32Array(WAVE_TBL_SIZE);
-for (let i = 0; i < WAVE_TBL_SIZE; i++) {
-  waveTable[i] = Math.sin((i / WAVE_TBL_SIZE) * 2 * Math.PI);
-}
 
 self.onmessage = function(e) {
   const msg = e.data;
@@ -37,6 +29,7 @@ self.onmessage = function(e) {
       const endFrame = Math.max(startFrame + 1, Math.min(numFrames - 1, Math.round(actualEndSec * sampleRate / hopSize)));
 
       let outBuffer;
+      const twoPi = 2 * Math.PI;
 
       // 0.0倍 (Freeze) の処理
       if (speed <= 0.001) {
@@ -55,21 +48,18 @@ self.onmessage = function(e) {
           }
         }
 
-        const phaseMult = WAVE_TBL_SIZE / sampleRate;
         for (let i = 0; i < active.length; i++) {
           const p = active[i];
           const ratio = pitchRatioArr[p.fi] || 1.0;
           const f = Math.min(p.freq * ratio, sampleRate * 0.49);
-          // 位相増分をインデックス幅に変換
-          const inc = f * phaseMult;
+          const inc = twoPi * f / sampleRate;
           const a = p.amp;
           
-          let phaseIdx = (p.phase / (2 * Math.PI)) * WAVE_TBL_SIZE;
-          if (phaseIdx < 0) phaseIdx += WAVE_TBL_SIZE;
-
+          let phase = p.phase;
           for (let s = 0; s < totalSamples; s++) {
-            outBuffer[s] += a * waveTable[Math.floor(phaseIdx) & WAVE_TBL_MASK];
-            phaseIdx += inc;
+            outBuffer[s] += a * Math.sin(phase);
+            phase += inc;
+            if (phase > Math.PI) phase -= twoPi;
           }
         }
 
@@ -87,11 +77,8 @@ self.onmessage = function(e) {
         const totalSamples = (outFrames + 4) * hopSize + releaseSamples;
         
         outBuffer = new Float64Array(totalSamples);
-        
         const nyq = sampleRate * 0.49;
-        const phaseMult = WAVE_TBL_SIZE / sampleRate;
         
-        // 進捗報告用のバッチサイズ
         const BATCH = Math.max(1, Math.floor(partials.length / 20));
 
         for (let i = 0; i < partials.length; i++) {
@@ -100,10 +87,7 @@ self.onmessage = function(e) {
           const segs = partials[i].segs;
           if (segs.length < 2) continue;
           
-          // 位相をラジアンから 0〜4095 のインデックス空間へ変換
-          let phaseIdx = ((segs[0].phase || 0) / (2 * Math.PI)) * WAVE_TBL_SIZE;
-          if (phaseIdx < 0) phaseIdx += WAVE_TBL_SIZE;
-          
+          let phase = segs[0].phase || 0;
           let lastWrittenSample = 0;
           let lastFreq = 0;
           let lastAmp = 0;
@@ -111,11 +95,12 @@ self.onmessage = function(e) {
           for (let j = 0; j < segs.length - 1; j++) {
             const s1 = segs[j], s2 = segs[j + 1];
 
-            // 開始フレームより前は位相だけ進める
             if (s2.fi < startFrame) {
               const durSamples = s2.fi - s1.fi;
               const avgF = (s1.freq + s2.freq) * 0.5;
-              phaseIdx += avgF * phaseMult * durSamples * hopSize;
+              phase += twoPi * avgF / sampleRate * durSamples * hopSize;
+              while (phase > Math.PI) phase -= twoPi;
+              while (phase < -Math.PI) phase += twoPi;
               continue;
             }
             if (s1.fi > endFrame) break;
@@ -132,7 +117,9 @@ self.onmessage = function(e) {
             if (durSamples <= 0) continue;
 
             if (a1 === 0 && a2 === 0) {
-              phaseIdx += f1 * phaseMult * durSamples;
+              phase += twoPi * f1 / sampleRate * durSamples;
+              while (phase > Math.PI) phase -= twoPi;
+              while (phase < -Math.PI) phase += twoPi;
               continue;
             }
 
@@ -140,7 +127,6 @@ self.onmessage = function(e) {
             const baseIdx = Math.max(0, Math.floor(relativeFrame / speed * hopSize));
             const invD = 1.0 / durSamples;
 
-            // 線形補間用の増分
             const fStep = (f2 - f1) * invD;
             const aStep = (a2 - a1) * invD;
             
@@ -150,30 +136,32 @@ self.onmessage = function(e) {
             for (let s = 0; s < durSamples; s++) {
               const idx = baseIdx + s;
               if (idx >= 0 && idx < totalSamples) {
-                outBuffer[idx] += currA * waveTable[Math.floor(phaseIdx) & WAVE_TBL_MASK];
+                outBuffer[idx] += currA * Math.sin(phase);
                 lastWrittenSample = idx;
                 lastFreq = currF;
                 lastAmp = currA;
               }
-              phaseIdx += currF * phaseMult;
+              phase += twoPi * currF / sampleRate;
+              if (phase > Math.PI) phase -= twoPi;
+              
               currF += fStep;
               currA += aStep;
             }
           }
 
-          // ★ 修正: Release (Rel) のプツ音防止
-          // 波形が途切れた場合でも、Release区間の最後までSustainレベル(lastAmp)でサイン波を延長する
+          // Release (Rel) のプツ音防止
           if (adsr && lastWrittenSample > 0) {
-            const requiredEndSample = totalSamples - 1; // Releaseの末尾
+            const requiredEndSample = totalSamples - 1;
             if (lastWrittenSample < requiredEndSample && lastAmp > 1e-5) {
               const extendSamples = requiredEndSample - lastWrittenSample;
-              const inc = lastFreq * phaseMult;
+              const inc = twoPi * lastFreq / sampleRate;
               for (let s = 1; s <= extendSamples; s++) {
                 const idx = lastWrittenSample + s;
                 if (idx < totalSamples) {
-                  outBuffer[idx] += lastAmp * waveTable[Math.floor(phaseIdx) & WAVE_TBL_MASK];
+                  outBuffer[idx] += lastAmp * Math.sin(phase);
                 }
-                phaseIdx += inc;
+                phase += inc;
+                if (phase > Math.PI) phase -= twoPi;
               }
             }
           }
@@ -220,8 +208,6 @@ self.onmessage = function(e) {
       }
 
       self.postMessage({ type: 'PROGRESS', value: 1.0 });
-      
-      // Transferable Objects として ArrayBuffer ごと渡す (ゼロコピー)
       self.postMessage({ type: 'DONE', buffer: outBuffer.buffer }, [outBuffer.buffer]);
 
     } catch (err) {

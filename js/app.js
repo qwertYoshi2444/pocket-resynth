@@ -1,13 +1,13 @@
 'use strict';
 /**
- * app.js — Application Controller (Optimized with Web Worker)
+ * app.js — Application Controller (Web Worker Integrated)
  */
 class HarmorApp {
   constructor() {
     this.audio    = new AudioManager();
     this.exporter = new WAVExporter();
     this.analyzer = null;
-    this.synth    = null; // AdditiveSynthesizer (Worker Wrapper)
+    this.synth    = null;
     this.renderer = null;
 
     this.audioData   = null;
@@ -291,7 +291,6 @@ class HarmorApp {
 
     try {
       this.analysis = await this.analyzer.analyze(this.audioData, p => this._progress(p));
-      // Synth Wrapper (Worker) を初期化
       this.synth = new AdditiveSynthesizer(this.sampleRate, this.analysis.hopSize);
 
       this.renderer.setAnalysis(this.analysis, this.audioData);
@@ -335,7 +334,6 @@ class HarmorApp {
       const speed = this.mode === 'synth' ? this.playbackSpeed : 1.0;
       const adsrToApply = this.mode === 'synth' ? this.adsr : null;
 
-      // PromiseベースでWorkerの処理完了を待機
       this.synthData = await this.synth.synthesize(
         this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, this.endTime, adsrToApply, null, p => this._progress(p)
       );
@@ -351,7 +349,6 @@ class HarmorApp {
         for (let note = 48; note <= 83; note++) {
           const stShift = (note - 60) + this.globalSemitones;
           const map = getPitchMap(stShift);
-          // Workerに次々とジョブを投げる (順番に処理される)
           const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, this.endTime, adsrToApply, null, null);
           this.synthBuffersMap.set(note, data);
           this._progress((note - 48) / 36);
@@ -398,7 +395,6 @@ class HarmorApp {
         const stShift = (ev.note - 60) + this.globalSemitones;
         const pitchMap = (fi, freq) => Math.pow(2, stShift / 12);
         
-        // Worker で該当ノートの長さとADSRを適用した波形を非同期生成
         const noteBuf = await this.synth.synthesize(
           this.analysis, pitchMap, speed, this.startTime, this.endTime, this.adsr, ev.duration, null
         );

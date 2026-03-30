@@ -14,7 +14,7 @@
     <h1>Harmor Web</h1>
     <span class="subtitle">Spectral Additive Engine</span>
     
-    <!-- モード切替タブ (名称変更) -->
+    <!-- モード切替タブ (横スクロール対応) -->
     <div id="modeTabs">
       <button id="tabSynth" class="tab-btn active">🎹 シンセ作成モード</button>
       <button id="tabVocal" class="tab-btn">🎤 ピッチ補正モード</button>
@@ -24,10 +24,12 @@
   </header>
 
   <!-- ── Toolbar ───────────────────────────────────────────────────── -->
+  <!-- モバイル向けに横スクロール対応 -->
   <div id="toolbar">
     <div class="toolbar-group">
       <button id="loadBtn" class="btn-primary">📂 Load Audio</button>
-      <input type="file" id="fileInput" accept="audio/*" hidden>
+      <!-- iOS等でグレーアウトしないよう拡張子を明記 -->
+      <input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.aac" hidden>
     </div>
 
     <div class="toolbar-group">
@@ -108,7 +110,7 @@
         </div>
       </div>
 
-      <!-- 共通: Playback Speed (Time-Stretch) 移動 -->
+      <!-- 共通: Playback Speed -->
       <div class="panel-section">
         <h3>Playback Speed</h3>
         <div class="slider-block">
@@ -161,7 +163,8 @@
           
           <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルからノートを抽出し、指定範囲の波形とADSRを用いて自動ミックスします。</p>
           <button id="loadMidiBtn" style="width:100%;font-size:11px;margin-bottom:6px;">📂 MIDIファイルを選択</button>
-          <input type="file" id="midiInput" accept=".mid,.midi" hidden>
+          <!-- iOS等でグレーアウトしないよう拡張子を明記 -->
+          <input type="file" id="midiInput" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
           <span id="midiInfo" style="display:block;font-size:10px;color:#58a6ff;margin-bottom:8px;text-align:center;">未選択</span>
           <button id="renderMidiBtn" disabled class="btn-primary" style="width:100%;font-size:11px;">💾 MIDI レンダリング (WAV出力)</button>
         </div>
