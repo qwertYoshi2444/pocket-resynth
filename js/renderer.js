@@ -25,13 +25,13 @@ class SpectralRenderer {
     this.endTime   = 1; 
 
     // ピッチ編集用データ構造
-    this.f0Data = null;     // オリジナルの解析データ (不変)
-    this.baseF0 = null;     // ユーザーが編集可能なベースライン
-    this.editedF0 = null;   // ベースラインに対する追加補正 (0 = 補正なし)
+    this.f0Data = null;     
+    this.baseF0 = null;     
+    this.editedF0 = null;   
     
     this.isSnapMode = true;
     this.showBaseF0 = true;
-    this.editTarget = 'edited'; // 'base' or 'edited'
+    this.editTarget = 'edited'; 
     this.isEraseMode = false;
 
     this.onSetStartTime = null;
@@ -93,14 +93,14 @@ class SpectralRenderer {
 
   _drawWaveform() {
     const cv = this.waveC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
-    cx.fillStyle = '#0d1117'; cx.fillRect(0, 0, W, H);
+    cx.fillStyle = '#101217'; cx.fillRect(0, 0, W, H);
     if (!this.audioData) return;
 
     const sr = this.analysis ? this.analysis.sampleRate : 44100;
     const s0 = Math.floor(this.viewStart * sr);
     const span = Math.ceil((this.viewEnd - this.viewStart) * sr);
 
-    cx.strokeStyle = '#1db954'; cx.lineWidth = 1; cx.beginPath();
+    cx.strokeStyle = '#739AFF'; cx.lineWidth = 1; cx.beginPath();
     for (let xi = 0; xi < W; xi++) {
       const a = s0 + Math.floor(xi / W * span);
       const b = s0 + Math.floor((xi + 1) / W * span);
@@ -114,7 +114,7 @@ class SpectralRenderer {
       if (xi === 0) cx.moveTo(xi, (y0 + y1) / 2); else { cx.lineTo(xi, y0); cx.lineTo(xi, y1); }
     }
     cx.stroke();
-    cx.strokeStyle = 'rgba(255,255,255,0.08)';
+    cx.strokeStyle = 'rgba(255,255,255,0.05)';
     cx.beginPath(); cx.moveTo(0, H/2); cx.lineTo(W, H/2); cx.stroke();
   }
 
@@ -127,38 +127,38 @@ class SpectralRenderer {
     if (this.startTime >= 0 && this.endTime >= 0 && this.endTime > this.startTime) {
       const sx = Math.max(0, this._timeToX(this.startTime, W));
       const ex = Math.min(W, this._timeToX(this.endTime, W));
-      cx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+      cx.fillStyle = 'rgba(115, 154, 255, 0.05)';
       cx.fillRect(sx, 0, ex - sx, H);
     }
 
     if (this.startTime >= this.viewStart && this.startTime <= this.viewEnd) {
       const sx = this._timeToX(this.startTime, W);
-      cx.strokeStyle = 'rgba(29, 185, 84, 0.9)'; cx.lineWidth = 2;
+      cx.strokeStyle = 'rgba(63, 185, 80, 0.9)'; cx.lineWidth = 2; // Greenish
       cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx, H); cx.stroke();
-      cx.fillStyle = 'rgba(29, 185, 84, 0.9)';
+      cx.fillStyle = 'rgba(63, 185, 80, 0.9)';
       cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx+6, 0); cx.lineTo(sx, 8); cx.lineTo(sx-6, 0); cx.fill();
     }
 
     if (this.endTime >= this.viewStart && this.endTime <= this.viewEnd) {
       const ex = this._timeToX(this.endTime, W);
-      cx.strokeStyle = 'rgba(255, 68, 68, 0.8)'; cx.lineWidth = 2;
+      cx.strokeStyle = 'rgba(248, 81, 73, 0.8)'; cx.lineWidth = 2; // Reddish
       cx.beginPath(); cx.moveTo(ex, 0); cx.lineTo(ex, H); cx.stroke();
-      cx.fillStyle = 'rgba(255, 68, 68, 0.8)';
+      cx.fillStyle = 'rgba(248, 81, 73, 0.8)';
       cx.beginPath(); cx.moveTo(ex, 0); cx.lineTo(ex+6, 0); cx.lineTo(ex, 8); cx.lineTo(ex-6, 0); cx.fill();
     }
 
     if (this.playhead >= this.viewStart && this.playhead <= this.viewEnd) {
       const xp = this._timeToX(this.playhead, W);
-      cx.strokeStyle = '#ff8844'; cx.lineWidth = 1.5;
+      cx.strokeStyle = '#FFB800'; cx.lineWidth = 1.5; // Amber
       cx.beginPath(); cx.moveTo(xp, 0); cx.lineTo(xp, H); cx.stroke();
-      cx.fillStyle = '#ff8844';
+      cx.fillStyle = '#FFB800';
       cx.beginPath(); cx.moveTo(xp-5,0); cx.lineTo(xp+5,0); cx.lineTo(xp,10); cx.fill();
     }
   }
 
   _drawSpectrogram() {
     const cv = this.specC, cx = cv.getContext('2d'), W = cv.width, H = cv.height;
-    cx.fillStyle = '#05070a'; cx.fillRect(0, 0, W, H);
+    cx.fillStyle = '#101217'; cx.fillRect(0, 0, W, H);
     if (!this.analysis || !this.analysis.spectrogram) return;
 
     const { spectrogram, spectFreqs, sampleRate, hopSize } = this.analysis;
@@ -186,7 +186,6 @@ class SpectralRenderer {
     }
     cx.putImageData(img, 0, 0);
 
-    // 常に周波数グリッドとMIDIグリッドをうっすら重ねる
     this._drawFreqGrid(cx, W, H);
     this._drawMidiGrid(cx, W, H);
   }
@@ -207,9 +206,9 @@ class SpectralRenderer {
     for (const f of labels) {
       if (f < this.freqMin || f > this.freqMax) continue;
       const y = this._freqToY(f, H);
-      cx.strokeStyle = 'rgba(255,255,255,0.07)'; cx.lineWidth = 1;
+      cx.strokeStyle = 'rgba(255,255,255,0.05)'; cx.lineWidth = 1;
       cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
-      cx.fillStyle = 'rgba(255,255,255,0.4)';
+      cx.fillStyle = 'rgba(255,255,255,0.3)';
       cx.fillText(f >= 1000 ? `${f/1000}k` : `${f}`, 3, y - 2);
     }
   }
@@ -227,15 +226,14 @@ class SpectralRenderer {
       const isBlack = [1,3,6,8,10].includes(m % 12);
       const isC = (m % 12 === 0);
 
-      // MIDIグリッドは控えめに描画
-      if (isBlack) { cx.strokeStyle = 'rgba(255, 255, 255, 0.05)'; cx.lineWidth = 1; } 
-      else { cx.strokeStyle = isC ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.1)'; cx.lineWidth = isC ? 1.5 : 1; }
+      if (isBlack) { cx.strokeStyle = 'rgba(255, 255, 255, 0.02)'; cx.lineWidth = 1; } 
+      else { cx.strokeStyle = isC ? 'rgba(255, 255, 255, 0.15)' : 'rgba(255, 255, 255, 0.06)'; cx.lineWidth = isC ? 1.5 : 1; }
 
       cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
 
       if (isC) {
         const oct = Math.floor(m / 12) - 1;
-        cx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        cx.fillStyle = 'rgba(255, 255, 255, 0.4)';
         cx.fillText(`C${oct}`, W - 20, y - 3);
       }
     }
@@ -249,6 +247,8 @@ class SpectralRenderer {
     const { partials, hopSize, sampleRate } = this.analysis;
 
     for (const p of partials) {
+      if (p.isNoise) continue; // ノイズパーシャルは表示しない
+
       const hue = (p.id * 137.508) % 360;
       cx.strokeStyle = `hsla(${hue},75%,60%,0.3)`; cx.lineWidth = 1.0;
       cx.beginPath(); let penDown = false;
@@ -271,11 +271,11 @@ class SpectralRenderer {
     if (this.analysis && this.f0Data) {
       const { hopSize, sampleRate } = this.analysis;
       if (this.showBaseF0 && this.baseF0) {
-        cx.strokeStyle = 'rgba(88, 166, 255, 0.8)'; cx.lineWidth = 2.5; 
+        cx.strokeStyle = 'rgba(115, 154, 255, 0.8)'; cx.lineWidth = 2.5; 
         this._traceCurve(cx, this.baseF0, hopSize, sampleRate, W, H, true);
       }
       if (this.editedF0) {
-        cx.strokeStyle = 'rgba(255, 68, 68, 1.0)'; cx.lineWidth = 4;
+        cx.strokeStyle = 'rgba(255, 184, 0, 1.0)'; cx.lineWidth = 4; // Amber curve
         this._traceCurve(cx, this.editedF0, hopSize, sampleRate, W, H, false);
       }
     }
@@ -285,7 +285,6 @@ class SpectralRenderer {
     cx.beginPath(); let penDown = false;
     for (let fi = 0; fi < f0Arr.length; fi++) {
       const f = f0Arr[fi];
-      // editedF0 の場合、0 は未編集を意味するのでスキップ
       if (isBase === false && f === 0) { penDown = false; continue; }
       if (f < 20) { penDown = false; continue; }
 
@@ -348,7 +347,6 @@ class SpectralRenderer {
     let panFMinL = 0, panFMaxL = 0;
 
     ui.addEventListener('mousedown', e => {
-      // 中ボタン (ホイールクリック) はパン移動専用
       if (e.button === 1) {
         draggingPan = true;
         panStartX = e.offsetX; panStartY = e.offsetY;
@@ -356,7 +354,6 @@ class SpectralRenderer {
         panFMinL = Math.log2(this.freqMin); panFMaxL = Math.log2(this.freqMax);
         return;
       }
-      // 左クリック・右クリックはピッチ編集
       if (e.button === 0 || e.button === 2) {
         draggingEdit = true;
         dragButton = e.button;
@@ -445,13 +442,11 @@ class SpectralRenderer {
     if (!this.editedF0) this.editedF0 = new Float32Array(this.f0Data.length);
 
     let target = this.editTarget;
-    // 右ドラッグの場合は PC であれば base を編集するショートカット
     if (button === 2 && target === 'edited') target = 'base';
 
     const { hopSize, sampleRate } = this.analysis;
     let freq = this._yToFreq(y, H);
 
-    // スナップ処理 (消しゴムモード時は不要)
     if (this.isSnapMode && !this.isEraseMode) {
       const midi = 69 + 12 * Math.log2(freq / 440);
       freq = 440 * Math.pow(2, (Math.round(midi) - 69) / 12);
@@ -483,8 +478,8 @@ class SpectralRenderer {
 
   _buildColormap() {
     return [
-      [0,0,4],[20,11,52],[58,9,99],[96,19,110],[133,33,107],[169,46,94],
-      [203,65,73],[229,89,52],[247,121,23],[252,165,10],[244,204,71],[252,255,164]
+      [16,18,23],[24,28,36],[32,40,54],[42,54,76],[54,72,102],[68,92,132],
+      [84,115,165],[102,141,202],[115,154,255],[150,180,255],[200,215,255],[255,255,255]
     ];
   }
   _ampToRGB(t) {

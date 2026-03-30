@@ -21,17 +21,22 @@ class HarmorApp {
     this.endTime   = 1; 
     this.synthBuffersMap = new Map(); 
 
-    this.adsr = { a: 10, d: 500, s: 100, r: 300 };
+    // 小数第一位まで保持
+    this.adsr = { a: 10.0, d: 500.0, s: 100.0, r: 300.0 };
     this.midiEvents = [];
 
     // ADSR表示用のスクロール状態 (単位: ms)
     this.adsrViewStart = 0;
     this.adsrViewEnd   = 1500; 
+    
+    // 現在の再生状態のトラッキング
+    this.currentPlayType = null; // 'orig' | 'synth' | null
 
     this._initRenderer();
     this._buildPianoRoll();
     this._bindUI();
     this._bindAdsrEvents();
+    this._bindKnobs();
     this._drawADSR();
   }
 
@@ -49,7 +54,7 @@ class HarmorApp {
 
     this.audio.onTimeUpdate = (t) => {
       let uiTime = t;
-      if (this.audio._src && this.audio._src.buffer === this.audio.synthBuf) {
+      if (this.currentPlayType === 'synth') {
          const elapsedSec = (this.audio.ctx.currentTime - this.audio._startAt);
          if (this.playbackSpeed <= 0.001) {
              uiTime = this.startTime;
@@ -63,8 +68,7 @@ class HarmorApp {
     };
     
     this.audio.onEnded = () => {
-      $('playOrigBtn').classList.remove('active');
-      $('playSynthBtn').classList.remove('active');
+      this._updatePlayButtons(null);
       this._drawADSR();
     };
   }
@@ -97,24 +101,6 @@ class HarmorApp {
     pitchNum.addEventListener('change', e => updatePitch(e.target.value));
 
     this._bindSlider('speedSlider', 'speedValue', v => { this.playbackSpeed = v; }, v => `${v.toFixed(2)}x`);
-
-    const bindADSR = (key, sliderId, numId) => {
-      const sl = $(sliderId), num = $(numId);
-      const update = (val) => {
-        let v = parseInt(val);
-        if(isNaN(v)) return;
-        this.adsr[key] = v;
-        sl.value = v; num.value = v;
-        this._autoAdjustAdsrView();
-        this._drawADSR();
-      };
-      sl.addEventListener('input', e => update(e.target.value));
-      num.addEventListener('change', e => update(e.target.value));
-    };
-    bindADSR('a', 'adsrASlider', 'adsrANum');
-    bindADSR('d', 'adsrDSlider', 'adsrDNum');
-    bindADSR('s', 'adsrSSlider', 'adsrSNum');
-    bindADSR('r', 'adsrRSlider', 'adsrRNum');
 
     this._bindScrollControls();
 
@@ -155,22 +141,10 @@ class HarmorApp {
     $('exportZipBtn').addEventListener('click', () => this._exportZip());
     $('renderMidiBtn').addEventListener('click', () => this._renderMidiAndDownload());
 
-    $('playOrigBtn').addEventListener('click', () => {
-      this.audio.play('orig', this.startTime, this.startTime);
-      $('playOrigBtn').classList.add('active'); $('playSynthBtn').classList.remove('active');
-    });
-    $('playSynthBtn').addEventListener('click', () => {
-      if (!this.synthData) return;
-      this.audio.play('synth', 0, this.startTime);
-      $('playSynthBtn').classList.add('active'); $('playOrigBtn').classList.remove('active');
-    });
-    $('stopBtn').addEventListener('click', () => {
-      this.audio.stop();
-      $('playOrigBtn').classList.remove('active'); $('playSynthBtn').classList.remove('active');
-      this.renderer.setPlayhead(this.startTime);
-      $('timeDisplay').textContent = formatTime(this.startTime);
-      this._drawADSR();
-    });
+    // Transport (Play/Stop Toggle Logic)
+    $('playOrigBtn').addEventListener('click', () => this._togglePlay('orig'));
+    $('playSynthBtn').addEventListener('click', () => this._togglePlay('synth'));
+    $('stopBtn').addEventListener('click', () => this._stopAll());
 
     $('exportBtn').addEventListener('click', () => {
       if (this.synthData) {
@@ -181,6 +155,75 @@ class HarmorApp {
 
     window.addEventListener('resize', () => this._resizeCanvases());
     this._resizeCanvases();
+  }
+
+  // ノブ(Rotary Knob)の初期化とバインディング
+  _bindKnobs() {
+    const bindKnob = (id, key) => {
+      const el = $(id);
+      const input = el.querySelector('input');
+      const min = parseFloat(el.getAttribute('data-min'));
+      const max = parseFloat(el.getAttribute('data-max'));
+      const curve = parseFloat(el.getAttribute('data-curve'));
+      
+      const knobCtrl = new KnobControl(el, min, max, curve, (v) => {
+        const val = parseFloat(v.toFixed(1));
+        input.value = val.toFixed(1);
+        this.adsr[key] = val;
+        this._autoAdjustAdsrView();
+        this._drawADSR();
+      });
+      
+      input.addEventListener('change', () => {
+        let v = parseFloat(input.value);
+        if (isNaN(v)) v = this.adsr[key];
+        v = Math.max(min, Math.min(max, v));
+        input.value = v.toFixed(1);
+        knobCtrl.setValue(v);
+        this.adsr[key] = v;
+        this._autoAdjustAdsrView();
+        this._drawADSR();
+      });
+      
+      knobCtrl.setValue(this.adsr[key]);
+    };
+
+    bindKnob('knobA', 'a');
+    bindKnob('knobD', 'd');
+    bindKnob('knobS', 's');
+    bindKnob('knobR', 'r');
+  }
+
+  _togglePlay(type) {
+    if (this.currentPlayType === type) {
+      // 同じボタンを押したら停止
+      this._stopAll();
+    } else {
+      // 違うボタン、または停止中の場合は再生
+      this._stopAll(); // 一旦止める
+      
+      if (type === 'orig' && this.audioData) {
+        this.audio.play('orig', this.startTime, this.startTime);
+        this._updatePlayButtons('orig');
+      } else if (type === 'synth' && this.synthData) {
+        this.audio.play('synth', 0, this.startTime);
+        this._updatePlayButtons('synth');
+      }
+    }
+  }
+
+  _stopAll() {
+    this.audio.stop();
+    this._updatePlayButtons(null);
+    this.renderer.setPlayhead(this.startTime);
+    $('timeDisplay').textContent = formatTime(this.startTime);
+    this._drawADSR();
+  }
+
+  _updatePlayButtons(type) {
+    this.currentPlayType = type;
+    $('playOrigBtn').classList.toggle('active', type === 'orig');
+    $('playSynthBtn').classList.toggle('active', type === 'synth');
   }
 
   _bindScrollControls() {
@@ -234,7 +277,6 @@ class HarmorApp {
     $('btnZoomInY').addEventListener('click', () => zoomY(0.8));
     $('btnZoomOutY').addEventListener('click', () => zoomY(1.25));
 
-    // ADSR Zoom/Pan Events
     const sAdsrX = $('sliderPanAdsrX');
     sAdsrX.addEventListener('input', () => {
       const maxT = Math.max(2000, this.adsr.a + this.adsr.d + this.adsr.r + 1000);
@@ -602,7 +644,7 @@ class HarmorApp {
 
         const btn = document.createElement('button');
         btn.className = 'stem-dl-btn';
-        btn.innerHTML = `<span class="track-name">${isStem ? `Track ${t+1}` : 'Master Out'}</span> <span class="icon">💾 DL</span>`;
+        btn.innerHTML = `<span class="track-name">${isStem ? `Track ${t+1}` : 'Master Out'}</span> <span class="icon-w"><svg class="icon"><use href="#icon-save"></use></svg> DL</span>`;
         btn.addEventListener('click', () => {
           this.exporter._triggerDownload(wavBytes, 'audio/wav', name);
         });
@@ -618,7 +660,7 @@ class HarmorApp {
         btnAll.style.width = '100%';
         btnAll.style.fontSize = '11px';
         btnAll.style.marginTop = '4px';
-        btnAll.textContent = '📦 全てZIPでダウンロード';
+        btnAll.innerHTML = '<svg class="icon"><use href="#icon-box"></use></svg> 全てZIPでダウンロード';
         btnAll.addEventListener('click', () => {
           this.exporter._triggerDownload(zip.generate(), 'application/zip', 'harmor-midi-stems.zip');
         });
@@ -666,17 +708,16 @@ class HarmorApp {
     for (let t = startGrid; t <= ve; t += step) {
       const x = toX(t);
       if (x < 0 || x > W) continue;
-      cx.strokeStyle = 'rgba(255,255,255,0.05)';
+      cx.strokeStyle = 'rgba(255,255,255,0.03)';
       cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x, H); cx.stroke();
       if (t % (step*2) === 0 || step >= 500) {
-        cx.fillStyle = 'rgba(255,255,255,0.3)';
+        cx.fillStyle = 'rgba(255,255,255,0.2)';
         cx.fillText(`${t}ms`, x + 3, H - 4);
       }
     }
 
-    // グラフのゼロ地点を H - 24 (セーフティマージン) に設定し、UIの枠外への見切れを防止
     const baseY = H - 24;
-    const maxH  = baseY - 4; // トップの高さの余裕
+    const maxH  = baseY - 4; 
 
     const t0 = 0;
     const t1 = a;
@@ -698,21 +739,21 @@ class HarmorApp {
     cx.lineTo(toX(t4), y4);
 
     cx.lineWidth = 2;
-    cx.strokeStyle = '#58a6ff';
+    cx.strokeStyle = '#739AFF'; // プロブルー
     cx.stroke();
 
     cx.lineTo(toX(t4), H);
     cx.lineTo(toX(t0), H);
-    cx.fillStyle = 'rgba(88, 166, 255, 0.12)';
+    cx.fillStyle = 'rgba(115, 154, 255, 0.1)';
     cx.fill();
 
-    if (this.audio.isPlaying && this.audio._src && this.audio._src.buffer === this.audio.synthBuf) {
+    if (this.currentPlayType === 'synth' && this.audio.isPlaying && this.audio._src && this.audio._src.buffer === this.audio.synthBuf) {
       const elapsedMs = (this.audio.ctx.currentTime - this.audio._startAt) * 1000;
       if (elapsedMs >= vs && elapsedMs <= ve) {
         const px = toX(elapsedMs);
-        cx.strokeStyle = '#ff8844'; cx.lineWidth = 1.5;
+        cx.strokeStyle = '#FFB800'; cx.lineWidth = 1.5; // アンバー
         cx.beginPath(); cx.moveTo(px, 0); cx.lineTo(px, H); cx.stroke();
-        cx.fillStyle = '#ff8844';
+        cx.fillStyle = '#FFB800';
         cx.beginPath(); cx.moveTo(px-5,0); cx.lineTo(px+5,0); cx.lineTo(px,10); cx.fill();
       }
     }
@@ -733,17 +774,20 @@ class HarmorApp {
         if (!this.synthBuffersMap.has(n)) return;
         key.classList.add('playing');
         this.audio.setSynthData(this.synthBuffersMap.get(n), this.sampleRate);
+        
+        this._stopAll();
         this.audio.play('synth', 0, this.startTime);
+        this._updatePlayButtons('synth');
       });
       
       key.addEventListener('mouseup', () => {
         key.classList.remove('playing');
-        this.audio.stop();
+        this._stopAll();
       });
       key.addEventListener('mouseleave', () => {
         if (key.classList.contains('playing')) {
           key.classList.remove('playing');
-          this.audio.stop();
+          this._stopAll();
         }
       });
       pr.appendChild(key);
@@ -801,6 +845,95 @@ class HarmorApp {
 
   _status(msg, level) { const el = $('statusMsg'); el.textContent = msg; el.className = 'status-msg ' + level; }
   _progress(v) { const b = $('progressBar'); b.style.display = v===null?'none':'block'; b.value = v; }
+}
+
+/**
+ * 非線形ノブ UI コンポーネント
+ * powerCurve = 1: 線形, >1: 下側に偏る指数カーブ (細かい調整を可能にする)
+ */
+class KnobControl {
+  constructor(el, min, max, powerCurve, onChange) {
+    this.el = el;
+    this.min = min;
+    this.max = max;
+    this.power = powerCurve;
+    this.onChange = onChange;
+    this.value = min;
+
+    this.track = el.querySelector('.k-track');
+    this.valPath = el.querySelector('.k-val');
+    this.ind = el.querySelector('.k-ind');
+    
+    this.startAng = 140; 
+    this.endAng = 400;   
+    this.rangeAng = this.endAng - this.startAng;
+
+    this.isDragging = false;
+    this.startY = 0;
+    this.startNorm = 0;
+
+    this._drawArc(this.track, this.startAng, this.endAng);
+    
+    el.querySelector('svg').addEventListener('mousedown', (e) => this._onMouseDown(e));
+    window.addEventListener('mousemove', (e) => this._onMouseMove(e));
+    window.addEventListener('mouseup', () => this._onMouseUp());
+  }
+
+  setValue(val) {
+    this.value = Math.max(this.min, Math.min(this.max, val));
+    const norm = Math.pow((this.value - this.min) / (this.max - this.min), 1 / this.power);
+    this._updateVisual(norm);
+  }
+
+  _onMouseDown(e) {
+    this.isDragging = true;
+    this.startY = e.clientY;
+    const norm = Math.pow((this.value - this.min) / (this.max - this.min), 1 / this.power);
+    this.startNorm = norm;
+    e.preventDefault();
+  }
+
+  _onMouseMove(e) {
+    if (!this.isDragging) return;
+    const dy = this.startY - e.clientY;
+    // 100px のドラッグで全範囲を移動
+    let norm = this.startNorm + dy / 100.0;
+    norm = Math.max(0, Math.min(1, norm));
+    
+    this.value = this.min + Math.pow(norm, this.power) * (this.max - this.min);
+    this._updateVisual(norm);
+    if (this.onChange) this.onChange(this.value);
+  }
+
+  _onMouseUp() {
+    this.isDragging = false;
+  }
+
+  _updateVisual(norm) {
+    const ang = this.startAng + norm * this.rangeAng;
+    this._drawArc(this.valPath, this.startAng, ang);
+    
+    const rAng = (ang - 90) * Math.PI / 180;
+    const x2 = 20 + 8 * Math.cos(rAng);
+    const y2 = 20 + 8 * Math.sin(rAng);
+    this.ind.setAttribute('x2', x2);
+    this.ind.setAttribute('y2', y2);
+  }
+
+  _drawArc(pathEl, startDeg, endDeg) {
+    if (endDeg - startDeg < 0.1) { pathEl.setAttribute('d', ''); return; }
+    
+    const cx = 20, cy = 20, r = 16;
+    const sRad = (startDeg - 90) * Math.PI / 180;
+    const eRad = (endDeg - 90) * Math.PI / 180;
+    
+    const x1 = cx + r * Math.cos(sRad), y1 = cy + r * Math.sin(sRad);
+    const x2 = cx + r * Math.cos(eRad), y2 = cy + r * Math.sin(eRad);
+    
+    const largeArc = (endDeg - startDeg) > 180 ? 1 : 0;
+    const d = `M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`;
+    pathEl.setAttribute('d', d);
+  }
 }
 
 function $(id) { return document.getElementById(id); }
