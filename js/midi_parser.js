@@ -1,12 +1,12 @@
 'use strict';
 /**
  * midi_parser.js — Lightweight MIDI (SMF) Parser
- * Extracts pure Note On/Off data with absolute start time and duration (seconds).
+ * Extracts pure Note On/Off data with absolute start time, duration, and track information.
  */
 class MidiParser {
   /**
    * @param {ArrayBuffer} buffer 
-   * @returns {Array} [{ note: number, start: number, duration: number }]
+   * @returns {Array} [{ note: number, start: number, duration: number, track: number }]
    */
   static parse(buffer) {
     const data = new Uint8Array(buffer);
@@ -86,7 +86,8 @@ class MidiParser {
               // Note Off (0x8 or 0x9 with vel=0)
               if (activeNotes.has(note)) {
                 const startTicks = activeNotes.get(note);
-                noteEvents.push({ note, startTicks, endTicks: ticks });
+                // トラック番号 t を付与して保存
+                noteEvents.push({ note, startTicks, endTicks: ticks, track: t });
                 activeNotes.delete(note);
               }
             }
@@ -106,7 +107,8 @@ class MidiParser {
     return noteEvents.map(e => ({
       note: e.note,
       start: e.startTicks * secPerTick,
-      duration: (e.endTicks - e.startTicks) * secPerTick
+      duration: (e.endTicks - e.startTicks) * secPerTick,
+      track: e.track
     })).sort((a, b) => a.start - b.start);
   }
 }

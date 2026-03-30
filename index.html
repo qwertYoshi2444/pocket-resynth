@@ -17,7 +17,6 @@
   </header>
 
   <!-- ── Toolbar ───────────────────────────────────────────────────── -->
-  <!-- モバイル向けに横スクロール対応 -->
   <div id="toolbar">
     <div class="toolbar-group">
       <button id="loadBtn" class="btn-primary">📂 Load Audio</button>
@@ -56,12 +55,28 @@
   <!-- ── Main ──────────────────────────────────────────────────────── -->
   <div id="mainContent">
     <div id="canvasArea">
-      <!-- Waveform (再生位置指定用: 左クリック=Start, 右クリック=End) -->
+      <!-- Waveform (再生位置指定用) -->
       <div id="waveformWrapper" oncontextmenu="return false;">
         <canvas id="waveformCanvas"></canvas>
         <canvas id="waveformUiCanvas"></canvas>
         <div id="dropZone">
           <span style="color:#8b949e;pointer-events:none">ここにファイルをドロップ</span>
+        </div>
+      </div>
+
+      <!-- Pitch Curve Editor Toolbar (スペクトログラム上部) -->
+      <div id="spectrogramToolbar">
+        <div class="toolbar-group">
+          <button id="btnEditBase" class="icon-btn" title="推定カーブ(青)を編集">✏️ 推定</button>
+          <button id="btnEditEdited" class="icon-btn active" title="補正カーブ(赤)を編集">🖍 補正</button>
+        </div>
+        <div class="toolbar-group" style="margin-left:8px; border-left:1px solid var(--border); padding-left:8px;">
+          <button id="btnErase" class="icon-btn" title="なぞった部分をリセット (消しゴム)">🧽 消去</button>
+          <button id="btnSnap" class="icon-btn active" title="12音スナップ (半音吸着)">🧲 スナップ</button>
+          <button id="btnShowBase" class="icon-btn active" title="推定ピッチカーブを表示">👁 表示</button>
+        </div>
+        <div class="toolbar-group" style="margin-left:auto;">
+          <button id="btnClearActive" class="icon-btn text-warn" title="選択中のカーブを全クリア">🗑️ 全クリア</button>
         </div>
       </div>
 
@@ -86,8 +101,15 @@
         <button id="btnZoomInX" class="zoom-btn">+</button>
       </div>
 
-      <!-- ADSRプレビューキャンバス -->
-      <canvas id="adsrCanvas" height="60" style="width:100%; border-top:1px solid var(--border); background:#05070a; display:block; flex-shrink:0;"></canvas>
+      <!-- ADSRプレビューキャンバス + 横スクロール -->
+      <div id="adsrWrapper" oncontextmenu="return false;">
+        <canvas id="adsrCanvas"></canvas>
+        <div id="controlAdsrX">
+          <button id="btnZoomOutAdsrX" class="zoom-btn">-</button>
+          <input type="range" id="sliderPanAdsrX" min="0" max="1000" value="0">
+          <button id="btnZoomInAdsrX" class="zoom-btn">+</button>
+        </div>
+      </div>
 
       <!-- ピアノロール (複数音生成時表示) -->
       <div id="pianoRoll" style="display:none;"></div>
@@ -125,51 +147,17 @@
         </div>
       </div>
 
-      <!-- Pitch Curve Editor -->
-      <div class="panel-section">
-        <h3>Pitch Curve Editor</h3>
-        <div style="margin-bottom:8px; display:flex; flex-direction:column; gap:6px;">
-          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
-            <input type="radio" name="editTarget" id="radioEditBase" value="base"> 推定カーブを編集
-          </label>
-          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
-            <input type="radio" name="editTarget" id="radioEditEdited" value="edited" checked> 補正後カーブを編集
-          </label>
-        </div>
-        
-        <div style="margin-bottom:12px; display:flex; flex-direction:column; gap:6px;">
-          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" id="eraseCheck"> なぞった部分をリセット (消しゴム)
-          </label>
-          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" id="snapCheck" checked> 12音スナップ (半音吸着)
-          </label>
-          <label style="font-size:12px;cursor:pointer;display:flex;align-items:center;gap:6px;">
-            <input type="checkbox" id="showBaseF0Check" checked> 推定ピッチカーブ(青)を表示
-          </label>
-        </div>
-        
-        <button id="resetBaseBtn" style="width:100%;font-size:11px;margin-bottom:6px;">推定カーブを全リセット</button>
-        <button id="resetEditedBtn" style="width:100%;font-size:11px;">補正後カーブを全リセット</button>
-        
-        <div style="font-size:10px;color:#8b949e;margin-top:12px;line-height:1.6">
-          <div>🖱 左ドラッグ: 選択中のカーブを描画</div>
-          <div>🖱 右ドラッグ: 推定カーブを描画(PC専用)</div>
-          <div>🖱 中ドラッグ: パン移動(XYスクロール)</div>
-        </div>
-      </div>
-
       <!-- ADSR Envelope -->
       <div class="panel-section">
         <h3>ADSR Envelope</h3>
         <div class="adsr-row">
           <div class="adsr-label">Att</div>
-          <input type="range" id="adsrASlider" min="0" max="2000" step="1" value="10">
+          <input type="range" id="adsrASlider" min="0" max="5000" step="1" value="10">
           <input type="number" id="adsrANum" value="10" min="0" max="10000"><span>ms</span>
         </div>
         <div class="adsr-row">
           <div class="adsr-label">Dec</div>
-          <input type="range" id="adsrDSlider" min="0" max="2000" step="1" value="500">
+          <input type="range" id="adsrDSlider" min="0" max="5000" step="1" value="500">
           <input type="number" id="adsrDNum" value="500" min="0" max="10000"><span>ms</span>
         </div>
         <div class="adsr-row">
@@ -179,8 +167,8 @@
         </div>
         <div class="adsr-row">
           <div class="adsr-label">Rel</div>
-          <input type="range" id="adsrRSlider" min="0" max="5000" step="1" value="300">
-          <input type="number" id="adsrRNum" value="300" min="0" max="10000"><span>ms</span>
+          <input type="range" id="adsrRSlider" min="0" max="10000" step="1" value="300">
+          <input type="number" id="adsrRNum" value="300" min="0" max="20000"><span>ms</span>
         </div>
       </div>
       
@@ -191,11 +179,19 @@
         
         <hr style="border:0;border-top:1px solid var(--border);margin:10px 0;">
         
-        <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルからノートを抽出し、指定範囲の波形とADSRを用いて自動ミックスします。</p>
+        <p class="hint" style="margin-bottom:6px;line-height:1.4">MIDIファイルからノートを抽出し、自動ミックスします。</p>
         <button id="loadMidiBtn" style="width:100%;font-size:11px;margin-bottom:6px;">📂 MIDIファイルを選択</button>
         <input type="file" id="midiInput" accept=".mid,.midi,audio/midi,audio/x-midi" hidden>
         <span id="midiInfo" style="display:block;font-size:10px;color:#58a6ff;margin-bottom:8px;text-align:center;">未選択</span>
-        <button id="renderMidiBtn" disabled class="btn-primary" style="width:100%;font-size:11px;">💾 MIDI レンダリング (WAV出力)</button>
+        
+        <label style="color:#e6edf3;font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer;margin-bottom:8px;">
+          <input type="checkbox" id="midiStemCheck"> Stem化して出力 (トラック分割)
+        </label>
+
+        <button id="renderMidiBtn" disabled class="btn-primary" style="width:100%;font-size:11px;margin-bottom:8px;">💾 MIDI レンダリング</button>
+        
+        <!-- Stem個別ダウンロードリスト -->
+        <div id="midiStemList" style="display:flex;flex-direction:column;gap:4px;"></div>
       </div>
     </aside>
   </div>
