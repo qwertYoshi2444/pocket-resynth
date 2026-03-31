@@ -1,4 +1,4 @@
-# Harmor Web — Spectral Resynthesis Engine
+# Pocket ReSynth — Spectral Resynthesis Engine
 
 ブラウザ上で動作する、加算合成・再合成ベースのピッチ編集エンジンです。
 FL Studio Harmor の「スペクトル解析 → partial 追跡 → 加算合成」パイプラインを
