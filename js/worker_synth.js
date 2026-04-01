@@ -21,7 +21,10 @@ self.onmessage = function(e) {
 
   if (msg.type === 'SYNTHESIZE') {
     try {
-      const { partials, numFrames, pitchRatioArr, speed, startSec, endSec, adsr, durationSec } = msg;
+      const { partials, numFrames, pitchRatioArr, speed, startSec, endSec, adsr, durationSec, noiseAmount, whiteNoise } = msg;
+      
+      const noiseScale = (noiseAmount !== undefined) ? Math.max(0, noiseAmount) : 1.0;
+      const wn = whiteNoise || { amount: 0, loCut: 200, hiCut: 8000 };
       
       const startFrame = Math.max(0, Math.min(numFrames - 1, Math.round(startSec * sampleRate / hopSize)));
       
@@ -60,7 +63,7 @@ self.onmessage = function(e) {
           // ノイズ成分も一応ピッチシフトに追従させる
           const f = Math.min(seg.freq * ratio, sampleRate * 0.49);
           const inc = twoPi * f / sampleRate;
-          const a = seg.amp;
+          const a = seg.amp * (isNoise ? noiseScale : 1.0);
           
           let phase = seg.phase;
           const phaseJitter = isNoise ? (twoPi * f * noiseBandwidthFactor / sampleRate) : 0;
@@ -115,8 +118,9 @@ self.onmessage = function(e) {
             const r2 = pitchRatioArr[s2.fi] || 1.0;
             const f1 = Math.min(s1.freq * r1, nyq);
             const f2 = Math.min(s2.freq * r2, nyq);
-            const a1 = s1.amp;
-            const a2 = s2.amp;
+            const ampScale = isNoise ? noiseScale : 1.0;
+            const a1 = s1.amp * ampScale;
+            const a2 = s2.amp * ampScale;
 
             const writeStart = Math.max(0, startSample);
             const writeEnd = Math.min(reqBaseSamples, endSample);
@@ -171,6 +175,39 @@ self.onmessage = function(e) {
               else if (phase < -Math.PI) phase += twoPi;
             }
           }
+        }
+      }
+
+      // ──────────────────────────────────────────────────────────────────
+      // White Noise Generation (bandpass via 1-pole HP + LP cascade)
+      // ──────────────────────────────────────────────────────────────────
+      if (wn.amount > 0.001) {
+        const wnAmp = wn.amount;
+
+        // 1-pole coefficients
+        // High-pass: y_hp[n] = alpha_hp * (y_hp[n-1] + x[n] - x[n-1])
+        // Low-pass:  y_lp[n] = alpha_lp * x[n] + (1 - alpha_lp) * y_lp[n-1]
+        const twoPiSr = twoPi / sampleRate;
+        const loCut = Math.max(20, Math.min(wn.loCut, sampleRate * 0.48));
+        const hiCut = Math.max(loCut + 10, Math.min(wn.hiCut, sampleRate * 0.49));
+
+        const alphaHP = 1.0 / (1.0 + twoPiSr * loCut);   // HP coefficient
+        const alphaLP = twoPiSr * hiCut / (1.0 + twoPiSr * hiCut); // LP coefficient
+
+        let yHP = 0, yLP = 0, xPrev = 0;
+
+        // Apply ADSR envelope-shaped amplitude to white noise too
+        for (let s = 0; s < totalSamples; s++) {
+          const raw = Math.random() * 2 - 1;
+
+          // High-pass
+          yHP = alphaHP * (yHP + raw - xPrev);
+          xPrev = raw;
+
+          // Low-pass applied to HP output
+          yLP = alphaLP * yHP + (1.0 - alphaLP) * yLP;
+
+          outBuffer[s] += yLP * wnAmp;
         }
       }
 

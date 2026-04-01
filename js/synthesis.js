@@ -28,7 +28,7 @@ class AdditiveSynthesizer {
    * @param {number}   durationSec MIDI用ノート長(指定時はendSecを上書き)
    * @param {Function} onProgress  進捗コールバック (0.0 ~ 1.0)
    */
-  synthesize(analysis, pitchMap, speed = 1.0, startSec = 0, endSec = 0, adsr = null, durationSec = null, onProgress = null) {
+  synthesize(analysis, pitchMap, speed = 1.0, startSec = 0, endSec = 0, adsr = null, durationSec = null, onProgress = null, noiseAmount = 1.0, whiteNoise = null) {
     return new Promise((resolve, reject) => {
       // 1. Workerに送れるように Partial データと PitchMap をシリアライズ
       const { partials, numFrames } = analysis;
@@ -74,7 +74,9 @@ class AdditiveSynthesizer {
         startSec: startSec,
         endSec: endSec,
         adsr: adsr,
-        durationSec: durationSec
+        durationSec: durationSec,
+        noiseAmount: noiseAmount,
+        whiteNoise: whiteNoise || { amount: 0, loCut: 200, hiCut: 8000 }
       });
     });
   }

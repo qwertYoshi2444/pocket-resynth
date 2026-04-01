@@ -408,6 +408,7 @@ class SpectralRenderer {
     
     // Pinch Zoom variables
     let initialPinchDist = 0;
+    let prevPinchDist = 0;
     let initialSpanT = 0, initialSpanF = 0;
 
     // --- Mouse Events ---
@@ -484,6 +485,7 @@ class SpectralRenderer {
         panFMaxL = Math.log2(this.freqMax);
         
         initialPinchDist = getPinchDist(e.touches);
+        prevPinchDist = initialPinchDist;
         initialSpanT = this.viewEnd - this.viewStart;
         initialSpanF = Math.log2(this.freqMax) - Math.log2(this.freqMin);
       }
@@ -500,18 +502,21 @@ class SpectralRenderer {
         prevX = x;
       } 
       else if (e.touches.length === 2 && draggingPan) {
-        // 1. Pan (Translation)
+        // 1. Pan (Translation) — use incremental delta from last frame
         const center = getPinchCenter(e.touches, rect);
         this._doPan(center.x - panStartX, center.y - panStartY, ui.width, ui.height);
-        
-        // 2. Zoom (Pinch)
+        // Update reference so next frame only moves by new delta
+        panStartX = center.x;
+        panStartY = center.y;
+
+        // 2. Zoom (Pinch) — use incremental scale between frames
         const currentDist = getPinchDist(e.touches);
-        if (initialPinchDist > 0) {
-          // 指が広がれば scale < 1 (ズームイン)、狭まれば scale > 1 (ズームアウト)
-          const scale = initialPinchDist / Math.max(10, currentDist);
-          // Pinch Zoom時は X/Y 両方の軸を同時にズームするよう実装 (中心点は指の中点)
+        if (prevPinchDist > 10) {
+          // scale > 1 = zoom out, scale < 1 = zoom in (fingers spreading)
+          const scale = prevPinchDist / Math.max(10, currentDist);
           this._doPinchZoomAbs(center.x, center.y, scale, ui.width, ui.height);
         }
+        prevPinchDist = currentDist;
       }
     }, { passive: false });
 
@@ -520,9 +525,11 @@ class SpectralRenderer {
       if (e.touches.length === 0) {
         draggingEdit = false;
         draggingPan = false;
+        prevPinchDist = 0;
       } else if (e.touches.length === 1) {
         // 2本指から1本指に減った場合、Pan解除・座標リセット
         draggingPan = false;
+        prevPinchDist = 0;
         const rect = ui.getBoundingClientRect();
         prevX = e.touches[0].clientX - rect.left;
       }

@@ -23,6 +23,8 @@ class HarmorApp {
 
     // 小数第一位まで保持
     this.adsr = { a: 10.0, d: 500.0, s: 100.0, r: 300.0 };
+    this.noiseAmount = 1.0;       // stochastic noise amount (0-1)
+    this.whiteNoise  = { amount: 0.0, loCut: 200, hiCut: 8000 };
     this.midiEvents = [];
 
     // ADSR表示用のスクロール状態 (単位: ms)
@@ -37,6 +39,7 @@ class HarmorApp {
     this._bindUI();
     this._bindAdsrEvents();
     this._bindKnobs();
+    this._bindNoiseKnobs();
     this._bindDragAndDrop();
     this._drawADSR();
   }
@@ -217,6 +220,38 @@ class HarmorApp {
     bindKnob('knobD', 'd');
     bindKnob('knobS', 's');
     bindKnob('knobR', 'r');
+  }
+
+  _bindNoiseKnobs() {
+    const bindSimpleKnob = (id, onVal) => {
+      const el = $(id);
+      const input = el.querySelector('input');
+      const min   = parseFloat(el.getAttribute('data-min'));
+      const max   = parseFloat(el.getAttribute('data-max'));
+      const curve = parseFloat(el.getAttribute('data-curve'));
+      const initVal = parseFloat(el.getAttribute('data-val'));
+
+      const ctrl = new KnobControl(el, min, max, curve, (v) => {
+        input.value = Math.round(v);
+        onVal(v);
+      });
+
+      input.addEventListener('change', () => {
+        let v = parseFloat(input.value);
+        if (isNaN(v)) v = initVal;
+        v = Math.max(min, Math.min(max, v));
+        input.value = Math.round(v);
+        ctrl.setValue(v);
+        onVal(v);
+      });
+
+      ctrl.setValue(initVal);
+    };
+
+    bindSimpleKnob('knobNoiseAmt', v => { this.noiseAmount = v / 100.0; });
+    bindSimpleKnob('knobWNAmt',   v => { this.whiteNoise.amount = v / 100.0; });
+    bindSimpleKnob('knobWNLo',    v => { this.whiteNoise.loCut = v; });
+    bindSimpleKnob('knobWNHi',    v => { this.whiteNoise.hiCut = v; });
   }
 
   _togglePlay(type) {
@@ -532,7 +567,8 @@ class HarmorApp {
       const adsrToApply = this.adsr;
 
       this.synthData = await this.synth.synthesize(
-        this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, this.endTime, adsrToApply, null, p => this._progress(p)
+        this.analysis, getPitchMap(this.globalSemitones), speed, this.startTime, this.endTime, adsrToApply, null, p => this._progress(p),
+        this.noiseAmount, this.whiteNoise
       );
 
       this.audio.setSynthData(this.synthData, this.sampleRate);
@@ -546,7 +582,8 @@ class HarmorApp {
         for (let note = 48; note <= 83; note++) {
           const stShift = (note - 60) + this.globalSemitones;
           const map = getPitchMap(stShift);
-          const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, this.endTime, adsrToApply, null, null);
+          const data = await this.synth.synthesize(this.analysis, map, speed, this.startTime, this.endTime, adsrToApply, null, null,
+            this.noiseAmount, this.whiteNoise);
           this.synthBuffersMap.set(note, data);
           this._progress((note - 48) / 36);
         }
@@ -625,7 +662,8 @@ class HarmorApp {
         const pitchMap = getPitchMap(stShift);
         
         const noteBuf = await this.synth.synthesize(
-          this.analysis, pitchMap, speed, this.startTime, this.endTime, this.adsr, ev.duration, null
+          this.analysis, pitchMap, speed, this.startTime, this.endTime, this.adsr, ev.duration, null,
+          this.noiseAmount, this.whiteNoise
         );
 
         const startSample = Math.floor(ev.start * this.sampleRate);

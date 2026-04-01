@@ -189,12 +189,12 @@
       <div class="panel-section">
         <h3>ADSR Envelope</h3>
         <div class="knob-grid">
-          <div class="knob" id="knobA" data-min="0" data-max="5000" data-val="10.0" data-curve="2">
+          <div class="knob" id="knobA" data-min="0" data-max="1000" data-val="10.0" data-curve="3">
             <svg viewBox="0 0 40 40"><path class="k-track" d=""/><path class="k-val" d=""/><circle cx="20" cy="20" r="12"/><line class="k-ind" x1="20" y1="20" x2="20" y2="12"/></svg>
             <div class="knob-label">Att</div>
             <div class="knob-input-wrap"><input type="number" step="0.1" value="10.0"><span>ms</span></div>
           </div>
-          <div class="knob" id="knobD" data-min="0" data-max="5000" data-val="500.0" data-curve="2">
+          <div class="knob" id="knobD" data-min="0" data-max="1000" data-val="500.0" data-curve="3">
             <svg viewBox="0 0 40 40"><path class="k-track" d=""/><path class="k-val" d=""/><circle cx="20" cy="20" r="12"/><line class="k-ind" x1="20" y1="20" x2="20" y2="12"/></svg>
             <div class="knob-label">Dec</div>
             <div class="knob-input-wrap"><input type="number" step="0.1" value="500.0"><span>ms</span></div>
@@ -204,7 +204,7 @@
             <div class="knob-label">Sus</div>
             <div class="knob-input-wrap"><input type="number" step="0.1" value="100.0"><span>%</span></div>
           </div>
-          <div class="knob" id="knobR" data-min="0" data-max="10000" data-val="300.0" data-curve="3">
+          <div class="knob" id="knobR" data-min="0" data-max="1000" data-val="300.0" data-curve="3">
             <svg viewBox="0 0 40 40"><path class="k-track" d=""/><path class="k-val" d=""/><circle cx="20" cy="20" r="12"/><line class="k-ind" x1="20" y1="20" x2="20" y2="12"/></svg>
             <div class="knob-label">Rel</div>
             <div class="knob-input-wrap"><input type="number" step="0.1" value="300.0"><span>ms</span></div>
@@ -212,6 +212,38 @@
         </div>
       </div>
       
+      <!-- Noise / White Noise -->
+      <div class="panel-section">
+        <h3>Noise &amp; Texture</h3>
+        <p class="hint" style="margin-bottom:10px;">解析ノイズ成分とホワイトノイズを調整します。</p>
+        <div class="knob-grid">
+          <!-- Stochastic noise amount from analysis -->
+          <div class="knob" id="knobNoiseAmt" data-min="0" data-max="100" data-val="100.0" data-curve="1">
+            <svg viewBox="0 0 40 40"><path class="k-track" d=""/><path class="k-val" d=""/><circle cx="20" cy="20" r="12"/><line class="k-ind" x1="20" y1="20" x2="20" y2="12"/></svg>
+            <div class="knob-label">Noise Amt</div>
+            <div class="knob-input-wrap"><input type="number" step="1" value="100"><span>%</span></div>
+          </div>
+          <!-- White noise amount -->
+          <div class="knob" id="knobWNAmt" data-min="0" data-max="100" data-val="0.0" data-curve="2">
+            <svg viewBox="0 0 40 40"><path class="k-track" d=""/><path class="k-val" d=""/><circle cx="20" cy="20" r="12"/><line class="k-ind" x1="20" y1="20" x2="20" y2="12"/></svg>
+            <div class="knob-label">WN Amt</div>
+            <div class="knob-input-wrap"><input type="number" step="1" value="0"><span>%</span></div>
+          </div>
+          <!-- White noise lo-cut -->
+          <div class="knob" id="knobWNLo" data-min="20" data-max="8000" data-val="200" data-curve="3">
+            <svg viewBox="0 0 40 40"><path class="k-track" d=""/><path class="k-val" d=""/><circle cx="20" cy="20" r="12"/><line class="k-ind" x1="20" y1="20" x2="20" y2="12"/></svg>
+            <div class="knob-label">WN Lo-Cut</div>
+            <div class="knob-input-wrap"><input type="number" step="1" value="200"><span>Hz</span></div>
+          </div>
+          <!-- White noise hi-cut -->
+          <div class="knob" id="knobWNHi" data-min="200" data-max="20000" data-val="8000" data-curve="3">
+            <svg viewBox="0 0 40 40"><path class="k-track" d=""/><path class="k-val" d=""/><circle cx="20" cy="20" r="12"/><line class="k-ind" x1="20" y1="20" x2="20" y2="12"/></svg>
+            <div class="knob-label">WN Hi-Cut</div>
+            <div class="knob-input-wrap"><input type="number" step="1" value="8000"><span>Hz</span></div>
+          </div>
+        </div>
+      </div>
+
       <!-- Multi-sample / MIDI -->
       <div class="panel-section" style="flex:1">
         <h3>Multi-sample / MIDI</h3>
