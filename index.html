@@ -2,8 +2,9 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Harmor Web — Spectral Resynthesis Engine</title>
+  <!-- ズーム禁止・モバイルネイティブアプリ化のためのviewport設定 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Pocket Resynth</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -28,7 +29,7 @@
 
   <!-- ── Header ────────────────────────────────────────────────────── -->
   <header id="header">
-    <h1>Harmor Web</h1>
+    <h1>Pocket Resynth</h1>
     <span class="subtitle">Spectral Additive Engine</span>
     <span id="fileInfo">— ファイル未読み込み —</span>
   </header>
@@ -79,6 +80,7 @@
   <div id="mainContent">
     <div id="canvasArea">
       <!-- Waveform (再生位置指定用) -->
+      <!-- touch-action: none でネイティブスクロールを禁止 -->
       <div id="waveformWrapper" oncontextmenu="return false;">
         <canvas id="waveformCanvas"></canvas>
         <canvas id="waveformUiCanvas"></canvas>
@@ -87,7 +89,7 @@
         </div>
       </div>
 
-      <!-- Pitch Curve Editor Toolbar (スペクトログラム上部) -->
+      <!-- Pitch Curve Editor Toolbar -->
       <div id="spectrogramToolbar">
         <div class="toolbar-group">
           <button id="btnEditBase" class="icon-btn" title="推定カーブ(青)を編集">
@@ -123,6 +125,7 @@
           <button id="btnZoomOutY" class="zoom-btn">-</button>
         </div>
 
+        <!-- touch-action: none でピンチズーム等のブラウザジェスチャーを禁止 -->
         <div id="spectrogramWrapper" oncontextmenu="return false;">
           <canvas id="spectrogramCanvas"></canvas>
           <canvas id="partialCanvas"></canvas>
@@ -253,7 +256,7 @@
       <svg class="icon"><use href="#icon-stop"></use></svg> Stop
     </button>
     <div class="transport-sep"></div>
-    <span class="hint" style="margin-right:auto">波形を 左クリックでStart(緑)、右クリックでEnd(赤) を設定</span>
+    <span class="hint" style="margin-right:auto">タップでStart(緑)、長押しでEnd(赤)を設定</span>
     <button id="exportBtn" disabled>
       <svg class="icon"><use href="#icon-save"></use></svg> 単一 WAV Export
     </button>

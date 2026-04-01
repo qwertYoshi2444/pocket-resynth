@@ -1,6 +1,9 @@
 'use strict';
 /**
  * renderer.js — Canvas Visualization Engine
+ * 
+ * - Touch API 完全対応 (パン、ズーム、タップ/長押し選択)
+ * - 高品質カラーテーマ (プロブルー & アンバー)
  */
 class SpectralRenderer {
   constructor({ spectrogramCanvas, partialCanvas, uiCanvas, waveformCanvas }) {
@@ -55,7 +58,6 @@ class SpectralRenderer {
     this.freqMax   = 20000;
     this.startTime = 0;
     
-    // ピッチデータの初期化
     if (analysis && analysis.f0Data) {
       this.f0Data = analysis.f0Data;
       this.baseF0 = new Float32Array(this.f0Data);
@@ -133,7 +135,7 @@ class SpectralRenderer {
 
     if (this.startTime >= this.viewStart && this.startTime <= this.viewEnd) {
       const sx = this._timeToX(this.startTime, W);
-      cx.strokeStyle = 'rgba(63, 185, 80, 0.9)'; cx.lineWidth = 2; // Greenish
+      cx.strokeStyle = 'rgba(63, 185, 80, 0.9)'; cx.lineWidth = 2; // Green
       cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx, H); cx.stroke();
       cx.fillStyle = 'rgba(63, 185, 80, 0.9)';
       cx.beginPath(); cx.moveTo(sx, 0); cx.lineTo(sx+6, 0); cx.lineTo(sx, 8); cx.lineTo(sx-6, 0); cx.fill();
@@ -141,7 +143,7 @@ class SpectralRenderer {
 
     if (this.endTime >= this.viewStart && this.endTime <= this.viewEnd) {
       const ex = this._timeToX(this.endTime, W);
-      cx.strokeStyle = 'rgba(248, 81, 73, 0.8)'; cx.lineWidth = 2; // Reddish
+      cx.strokeStyle = 'rgba(248, 81, 73, 0.8)'; cx.lineWidth = 2; // Red
       cx.beginPath(); cx.moveTo(ex, 0); cx.lineTo(ex, H); cx.stroke();
       cx.fillStyle = 'rgba(248, 81, 73, 0.8)';
       cx.beginPath(); cx.moveTo(ex, 0); cx.lineTo(ex+6, 0); cx.lineTo(ex, 8); cx.lineTo(ex-6, 0); cx.fill();
@@ -247,7 +249,7 @@ class SpectralRenderer {
     const { partials, hopSize, sampleRate } = this.analysis;
 
     for (const p of partials) {
-      if (p.isNoise) continue; // ノイズパーシャルは表示しない
+      if (p.isNoise) continue;
 
       const hue = (p.id * 137.508) % 360;
       cx.strokeStyle = `hsla(${hue},75%,60%,0.3)`; cx.lineWidth = 1.0;
@@ -275,7 +277,7 @@ class SpectralRenderer {
         this._traceCurve(cx, this.baseF0, hopSize, sampleRate, W, H, true);
       }
       if (this.editedF0) {
-        cx.strokeStyle = 'rgba(255, 184, 0, 1.0)'; cx.lineWidth = 4; // Amber curve
+        cx.strokeStyle = 'rgba(255, 184, 0, 1.0)'; cx.lineWidth = 4; // Amber
         this._traceCurve(cx, this.editedF0, hopSize, sampleRate, W, H, false);
       }
     }
@@ -306,8 +308,13 @@ class SpectralRenderer {
     let draggingStart = false;
     let draggingEnd   = false;
 
-    const updateTime = (e, isStart) => {
-      const t = this._xToTime(e.offsetX, ui.width);
+    // タッチ用長押し判定タイマー
+    let touchTimer = null;
+    let isLongPress = false;
+    let touchStartX = 0, touchStartY = 0;
+
+    const updateTime = (x, isStart) => {
+      const t = this._xToTime(x, ui.width);
       const clamped = Math.max(0, Math.min(t, this.analysis ? this.analysis.duration : 60));
       
       if (isStart) {
@@ -321,19 +328,71 @@ class SpectralRenderer {
       this._drawWaveformUI();
     };
 
+    // マウス操作
     ui.addEventListener('mousedown', e => {
-      if (e.button === 0) { draggingStart = true; updateTime(e, true); }
-      else if (e.button === 2) { draggingEnd = true; updateTime(e, false); }
+      if (e.button === 0) { draggingStart = true; updateTime(e.offsetX, true); }
+      else if (e.button === 2) { draggingEnd = true; updateTime(e.offsetX, false); }
     });
-    
     ui.addEventListener('mousemove', e => {
-      if (draggingStart) updateTime(e, true);
-      if (draggingEnd) updateTime(e, false);
+      if (draggingStart) updateTime(e.offsetX, true);
+      if (draggingEnd) updateTime(e.offsetX, false);
     });
-    
     ui.addEventListener('mouseup', () => { draggingStart = false; draggingEnd = false; });
     ui.addEventListener('mouseleave', () => { draggingStart = false; draggingEnd = false; });
     ui.addEventListener('contextmenu', e => e.preventDefault());
+
+    // タッチ操作 (タップ=Start, 長押し=End)
+    ui.addEventListener('touchstart', e => {
+      if(e.touches.length !== 1) return;
+      e.preventDefault();
+      const rect = ui.getBoundingClientRect();
+      touchStartX = e.touches[0].clientX - rect.left;
+      touchStartY = e.touches[0].clientY - rect.top;
+      
+      isLongPress = false;
+      draggingStart = false;
+      draggingEnd = false;
+
+      // 500ms 押したままなら End 位置指定とみなす
+      touchTimer = setTimeout(() => {
+        isLongPress = true;
+        draggingEnd = true;
+        updateTime(touchStartX, false);
+        if (navigator.vibrate) navigator.vibrate(50); // Haptic feedback
+      }, 500);
+    }, {passive: false});
+
+    ui.addEventListener('touchmove', e => {
+      if(e.touches.length !== 1) return;
+      e.preventDefault();
+      const rect = ui.getBoundingClientRect();
+      const x = e.touches[0].clientX - rect.left;
+      const y = e.touches[0].clientY - rect.top;
+
+      // 指が大きく動いたら長押しキャンセルして Start 移動とみなす
+      if (touchTimer && !isLongPress && Math.abs(x - touchStartX) > 10) {
+        clearTimeout(touchTimer);
+        touchTimer = null;
+        draggingStart = true;
+      }
+
+      if (draggingStart) updateTime(x, true);
+      if (draggingEnd) updateTime(x, false);
+    }, {passive: false});
+
+    ui.addEventListener('touchend', e => {
+      e.preventDefault();
+      if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+      
+      // 動かず、かつ長押しでもなかった場合は「タップ」なので Start 位置を更新
+      if (!isLongPress && !draggingStart && !draggingEnd) {
+        updateTime(touchStartX, true);
+      }
+      
+      draggingStart = false;
+      draggingEnd = false;
+      isLongPress = false;
+    }, {passive: false});
   }
 
   _bindEvents() {
@@ -342,10 +401,16 @@ class SpectralRenderer {
     let dragButton = -1;
     let prevX = 0;
     
+    // Pan / Zoom variables
     let panStartX = 0, panStartY = 0;
     let panVStart = 0, panVEnd = 0;
     let panFMinL = 0, panFMaxL = 0;
+    
+    // Pinch Zoom variables
+    let initialPinchDist = 0;
+    let initialSpanT = 0, initialSpanF = 0;
 
+    // --- Mouse Events ---
     ui.addEventListener('mousedown', e => {
       if (e.button === 1) {
         draggingPan = true;
@@ -364,35 +429,8 @@ class SpectralRenderer {
 
     ui.addEventListener('mousemove', e => {
       if (draggingPan) {
-        const dx = e.offsetX - panStartX;
-        const dy = e.offsetY - panStartY;
-        
-        const timeSpan = panVEnd - panVStart;
-        const dt = (dx / ui.width) * timeSpan;
-        let newStart = panVStart - dt; let newEnd = panVEnd - dt;
-
-        const maxTime = this.analysis ? this.analysis.duration : 60;
-        if (newStart < 0) { newEnd -= newStart; newStart = 0; }
-        if (newEnd > maxTime) { newStart -= (newEnd - maxTime); newEnd = maxTime; }
-        this.viewStart = Math.max(0, newStart); this.viewEnd = Math.min(maxTime, newEnd);
-
-        const freqSpanL = panFMaxL - panFMinL;
-        const df = (dy / ui.height) * freqSpanL; 
-        
-        let newFMaxL = panFMaxL + df; let newFMinL = panFMinL + df;
-        const minL = Math.log2(20), maxL = Math.log2(20000);
-        
-        if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
-        if (newFMinL < minL) { newFMaxL -= (newFMinL - minL); newFMinL = minL; }
-        
-        this.freqMax = Math.pow(2, newFMaxL); this.freqMin = Math.pow(2, newFMinL);
-
-        this.renderAll();
-        if (this.onViewChange) this.onViewChange();
-        return;
-      }
-
-      if (draggingEdit) {
+        this._doPan(e.offsetX - panStartX, e.offsetY - panStartY, ui.width, ui.height);
+      } else if (draggingEdit) {
         this._editCurve(e.offsetX, e.offsetY, prevX, dragButton, ui.width, ui.height);
         prevX = e.offsetX;
       }
@@ -402,46 +440,188 @@ class SpectralRenderer {
       if (e.button === 1) { draggingPan = false; return; }
       if (e.button === 0 || e.button === 2) draggingEdit = false;
     });
-
     ui.addEventListener('mouseleave', () => { draggingEdit = false; draggingPan = false; });
 
     ui.addEventListener('wheel', e => {
       e.preventDefault();
       const scale = e.deltaY > 0 ? 1.15 : 0.87;
+      this._doZoom(e.offsetX, e.offsetY, scale, e.shiftKey, ui.width, ui.height);
+    }, { passive: false });
 
-      if (e.shiftKey) {
-        const f = this._yToFreq(e.offsetY, ui.height);
-        const fL = Math.log2(f);
-        const spanL = Math.log2(this.freqMax) - Math.log2(this.freqMin);
-        const newSpanL = Math.max(this.minFreqZoomRangeL, spanL * scale); 
+    // --- Touch Events (Multitouch / Pinch-Zoom) ---
+    const getPinchDist = (touches) => {
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.sqrt(dx * dx + dy * dy);
+    };
+    const getPinchCenter = (touches, rect) => {
+      const cx = (touches[0].clientX + touches[1].clientX) / 2 - rect.left;
+      const cy = (touches[0].clientY + touches[1].clientY) / 2 - rect.top;
+      return { x: cx, y: cy };
+    };
+
+    ui.addEventListener('touchstart', e => {
+      e.preventDefault();
+      const rect = ui.getBoundingClientRect();
+      
+      if (e.touches.length === 1) {
+        draggingEdit = true;
+        dragButton = 0; // Touch is always treated as primary (left) button for edit
+        prevX = e.touches[0].clientX - rect.left;
+        this._editCurve(prevX, e.touches[0].clientY - rect.top, prevX, dragButton, ui.width, ui.height);
+      } 
+      else if (e.touches.length === 2) {
+        // 2本指になった瞬間、編集はキャンセルして Pan/Zoom モードへ移行
+        draggingEdit = false;
+        draggingPan = true;
         
-        let newFMinL = fL - (fL - Math.log2(this.freqMin)) * (newSpanL / spanL);
-        let newFMaxL = newFMinL + newSpanL;
+        const center = getPinchCenter(e.touches, rect);
+        panStartX = center.x;
+        panStartY = center.y;
+        panVStart = this.viewStart;
+        panVEnd = this.viewEnd;
+        panFMinL = Math.log2(this.freqMin);
+        panFMaxL = Math.log2(this.freqMax);
         
-        const minL = Math.log2(20), maxL = Math.log2(20000);
-        if (newFMinL < minL) { newFMaxL += (minL - newFMinL); newFMinL = minL; }
-        if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
-        
-        this.freqMin = Math.pow(2, newFMinL); this.freqMax = Math.pow(2, newFMaxL);
-      } else {
-        const t = this._xToTime(e.offsetX, ui.width);
-        const span = this.viewEnd - this.viewStart;
-        const newSpan = Math.max(0.05, Math.min(this.analysis ? this.analysis.duration : 60, span * scale));
-        
-        this.viewStart = Math.max(0, t - (t - this.viewStart) / span * newSpan);
-        this.viewEnd = this.viewStart + newSpan;
-        if (this.analysis && this.viewEnd > this.analysis.duration) this.viewEnd = this.analysis.duration;
+        initialPinchDist = getPinchDist(e.touches);
+        initialSpanT = this.viewEnd - this.viewStart;
+        initialSpanF = Math.log2(this.freqMax) - Math.log2(this.freqMin);
       }
-      this.renderAll();
-      if (this.onViewChange) this.onViewChange();
+    }, { passive: false });
+
+    ui.addEventListener('touchmove', e => {
+      e.preventDefault();
+      const rect = ui.getBoundingClientRect();
+      
+      if (e.touches.length === 1 && draggingEdit) {
+        const x = e.touches[0].clientX - rect.left;
+        const y = e.touches[0].clientY - rect.top;
+        this._editCurve(x, y, prevX, dragButton, ui.width, ui.height);
+        prevX = x;
+      } 
+      else if (e.touches.length === 2 && draggingPan) {
+        // 1. Pan (Translation)
+        const center = getPinchCenter(e.touches, rect);
+        this._doPan(center.x - panStartX, center.y - panStartY, ui.width, ui.height);
+        
+        // 2. Zoom (Pinch)
+        const currentDist = getPinchDist(e.touches);
+        if (initialPinchDist > 0) {
+          // 指が広がれば scale < 1 (ズームイン)、狭まれば scale > 1 (ズームアウト)
+          const scale = initialPinchDist / Math.max(10, currentDist);
+          // Pinch Zoom時は X/Y 両方の軸を同時にズームするよう実装 (中心点は指の中点)
+          this._doPinchZoomAbs(center.x, center.y, scale, ui.width, ui.height);
+        }
+      }
+    }, { passive: false });
+
+    ui.addEventListener('touchend', e => {
+      e.preventDefault();
+      if (e.touches.length === 0) {
+        draggingEdit = false;
+        draggingPan = false;
+      } else if (e.touches.length === 1) {
+        // 2本指から1本指に減った場合、Pan解除・座標リセット
+        draggingPan = false;
+        const rect = ui.getBoundingClientRect();
+        prevX = e.touches[0].clientX - rect.left;
+      }
     }, { passive: false });
   }
+
+  // --- Pan / Zoom Logic Handlers ---
+  _doPan(dx, dy, W, H) {
+    const timeSpan = this.viewEnd - this.viewStart;
+    const dt = (dx / W) * timeSpan;
+    let newStart = this.viewStart - dt; 
+    let newEnd = this.viewEnd - dt;
+
+    const maxTime = this.analysis ? this.analysis.duration : 60;
+    if (newStart < 0) { newEnd -= newStart; newStart = 0; }
+    if (newEnd > maxTime) { newStart -= (newEnd - maxTime); newEnd = maxTime; }
+    this.viewStart = Math.max(0, newStart); 
+    this.viewEnd = Math.min(maxTime, newEnd);
+
+    const freqSpanL = Math.log2(this.freqMax) - Math.log2(this.freqMin);
+    const df = (dy / H) * freqSpanL; 
+    
+    let newFMaxL = Math.log2(this.freqMax) + df; 
+    let newFMinL = Math.log2(this.freqMin) + df;
+    const minL = Math.log2(20), maxL = Math.log2(20000);
+    
+    if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
+    if (newFMinL < minL) { newFMaxL -= (newFMinL - minL); newFMinL = minL; }
+    
+    this.freqMax = Math.pow(2, newFMaxL); 
+    this.freqMin = Math.pow(2, newFMinL);
+
+    this.renderAll();
+    if (this.onViewChange) this.onViewChange();
+  }
+
+  _doZoom(cx, cy, scale, isShift, W, H) {
+    if (isShift) {
+      // Y軸ズーム
+      const f = this._yToFreq(cy, H);
+      const fL = Math.log2(f);
+      const spanL = Math.log2(this.freqMax) - Math.log2(this.freqMin);
+      const newSpanL = Math.max(this.minFreqZoomRangeL, spanL * scale); 
+      
+      let newFMinL = fL - (fL - Math.log2(this.freqMin)) * (newSpanL / spanL);
+      let newFMaxL = newFMinL + newSpanL;
+      
+      const minL = Math.log2(20), maxL = Math.log2(20000);
+      if (newFMinL < minL) { newFMaxL += (minL - newFMinL); newFMinL = minL; }
+      if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
+      
+      this.freqMin = Math.pow(2, newFMinL); this.freqMax = Math.pow(2, newFMaxL);
+    } else {
+      // X軸ズーム
+      const t = this._xToTime(cx, W);
+      const span = this.viewEnd - this.viewStart;
+      const newSpan = Math.max(0.05, Math.min(this.analysis ? this.analysis.duration : 60, span * scale));
+      
+      this.viewStart = Math.max(0, t - (t - this.viewStart) / span * newSpan);
+      this.viewEnd = this.viewStart + newSpan;
+      if (this.analysis && this.viewEnd > this.analysis.duration) this.viewEnd = this.analysis.duration;
+    }
+    this.renderAll();
+    if (this.onViewChange) this.onViewChange();
+  }
+
+  _doPinchZoomAbs(cx, cy, scale, W, H) {
+    // X, Y 両方を同時にズーム (Mobile Multi-touch用)
+    const t = this._xToTime(cx, W);
+    const span = this.viewEnd - this.viewStart;
+    const newSpan = Math.max(0.05, Math.min(this.analysis ? this.analysis.duration : 60, span * scale));
+    this.viewStart = Math.max(0, t - (t - this.viewStart) / span * newSpan);
+    this.viewEnd = this.viewStart + newSpan;
+    if (this.analysis && this.viewEnd > this.analysis.duration) this.viewEnd = this.analysis.duration;
+
+    const f = this._yToFreq(cy, H);
+    const fL = Math.log2(f);
+    const spanL = Math.log2(this.freqMax) - Math.log2(this.freqMin);
+    const newSpanL = Math.max(this.minFreqZoomRangeL, Math.min(Math.log2(20000)-Math.log2(20), spanL * scale)); 
+    let newFMinL = fL - (fL - Math.log2(this.freqMin)) * (newSpanL / spanL);
+    let newFMaxL = newFMinL + newSpanL;
+    
+    const minL = Math.log2(20), maxL = Math.log2(20000);
+    if (newFMinL < minL) { newFMaxL += (minL - newFMinL); newFMinL = minL; }
+    if (newFMaxL > maxL) { newFMinL -= (newFMaxL - maxL); newFMaxL = maxL; }
+    this.freqMin = Math.pow(2, newFMinL); this.freqMax = Math.pow(2, newFMaxL);
+
+    this.renderAll();
+    if (this.onViewChange) this.onViewChange();
+  }
+
+  // --- / Pan Zoom Logic Handlers ---
 
   _editCurve(x, y, pX, button, W, H) {
     if (!this.analysis || !this.f0Data || !this.baseF0) return;
     if (!this.editedF0) this.editedF0 = new Float32Array(this.f0Data.length);
 
     let target = this.editTarget;
+    // 右ドラッグの場合は PC であれば base を編集するショートカット
     if (button === 2 && target === 'edited') target = 'base';
 
     const { hopSize, sampleRate } = this.analysis;

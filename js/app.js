@@ -37,6 +37,7 @@ class HarmorApp {
     this._bindUI();
     this._bindAdsrEvents();
     this._bindKnobs();
+    this._bindDragAndDrop();
     this._drawADSR();
   }
 
@@ -157,7 +158,31 @@ class HarmorApp {
     this._resizeCanvases();
   }
 
-  // ノブ(Rotary Knob)の初期化とバインディング
+  // --- Drag and Drop File Loading ---
+  _bindDragAndDrop() {
+    const wrap = $('waveformWrapper'); // キャンバスより上のラッパーにイベントを付与
+    const zone = $('dropZone');
+
+    const prevent = e => { e.preventDefault(); e.stopPropagation(); };
+
+    wrap.addEventListener('dragenter', e => {
+      prevent(e);
+      if (!this.audioData) wrap.classList.add('drag-over');
+    });
+    wrap.addEventListener('dragover', prevent);
+    wrap.addEventListener('dragleave', e => {
+      prevent(e);
+      wrap.classList.remove('drag-over');
+    });
+    wrap.addEventListener('drop', e => {
+      prevent(e);
+      wrap.classList.remove('drag-over');
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        this._loadFile(e.dataTransfer.files[0]);
+      }
+    });
+  }
+
   _bindKnobs() {
     const bindKnob = (id, key) => {
       const el = $(id);
@@ -196,12 +221,9 @@ class HarmorApp {
 
   _togglePlay(type) {
     if (this.currentPlayType === type) {
-      // 同じボタンを押したら停止
       this._stopAll();
     } else {
-      // 違うボタン、または停止中の場合は再生
-      this._stopAll(); // 一旦止める
-      
+      this._stopAll(); 
       if (type === 'orig' && this.audioData) {
         this.audio.play('orig', this.startTime, this.startTime);
         this._updatePlayButtons('orig');
@@ -437,6 +459,9 @@ class HarmorApp {
       this.endTime = decoded.duration;
       this.renderer._drawWaveform();
       this.renderer._drawWaveformUI();
+
+      // ロード成功後、DropZone のテキストを完全に非表示にする
+      $('dropZone').style.display = 'none';
 
       $('analyzeBtn').disabled = false;
       $('playOrigBtn').disabled = false;
@@ -759,39 +784,79 @@ class HarmorApp {
     }
   }
 
+  // --- Piano Roll ---
   _buildPianoRoll() {
     const pr = $('pianoRoll');
     pr.innerHTML = '';
     const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
     
+    // 現在鳴っているノート番号（グリッサンド追跡用）
+    let activeNote = null;
+
+    const playNote = (n, el) => {
+      if (activeNote !== null) return; // 既に鳴っていれば無視（touchmove用）
+      if (!this.synthBuffersMap.has(n)) return;
+      el.classList.add('playing');
+      activeNote = n;
+      this.audio.setSynthData(this.synthBuffersMap.get(n), this.sampleRate);
+      this._stopAll();
+      this.audio.play('synth', 0, this.startTime);
+      this._updatePlayButtons('synth');
+    };
+
+    const stopNote = (el) => {
+      el.classList.remove('playing');
+      activeNote = null;
+      this._stopAll();
+    };
+
     for(let n = 48; n <= 83; n++) {
       const isBlack = [1,3,6,8,10].includes(n % 12);
       const key = document.createElement('div');
       key.className = `pr-key ${isBlack ? 'black' : 'white'}`;
       key.textContent = isBlack ? '' : noteNames[n % 12] + (Math.floor(n / 12) - 1);
+      key.dataset.note = n;
       
-      key.addEventListener('mousedown', () => {
-        if (!this.synthBuffersMap.has(n)) return;
-        key.classList.add('playing');
-        this.audio.setSynthData(this.synthBuffersMap.get(n), this.sampleRate);
-        
-        this._stopAll();
-        this.audio.play('synth', 0, this.startTime);
-        this._updatePlayButtons('synth');
-      });
-      
-      key.addEventListener('mouseup', () => {
-        key.classList.remove('playing');
-        this._stopAll();
-      });
-      key.addEventListener('mouseleave', () => {
-        if (key.classList.contains('playing')) {
-          key.classList.remove('playing');
-          this._stopAll();
-        }
-      });
+      // Mouse Events
+      key.addEventListener('mousedown', () => playNote(n, key));
+      key.addEventListener('mouseup', () => stopNote(key));
+      key.addEventListener('mouseleave', () => { if (key.classList.contains('playing')) stopNote(key); });
+
+      // Touch Events (Glissando / なぞり弾き)
+      key.addEventListener('touchstart', e => {
+        e.preventDefault();
+        playNote(n, key);
+      }, {passive: false});
+
       pr.appendChild(key);
     }
+
+    // TouchMove を使って PianoRoll 全体でのグリッサンドを実現
+    pr.addEventListener('touchmove', e => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      const el = document.elementFromPoint(touch.clientX, touch.clientY);
+      if (el && el.classList.contains('pr-key')) {
+        const targetNote = parseInt(el.dataset.note);
+        if (targetNote !== activeNote) {
+          // 現在の音を止める
+          const activeEl = pr.querySelector('.pr-key.playing');
+          if (activeEl) stopNote(activeEl);
+          // 新しい音を鳴らす
+          playNote(targetNote, el);
+        }
+      } else {
+        // 鍵盤外に指が出たら止める
+        const activeEl = pr.querySelector('.pr-key.playing');
+        if (activeEl) stopNote(activeEl);
+      }
+    }, {passive: false});
+
+    pr.addEventListener('touchend', e => {
+      e.preventDefault();
+      const activeEl = pr.querySelector('.pr-key.playing');
+      if (activeEl) stopNote(activeEl);
+    }, {passive: false});
   }
 
   _exportZip() {
@@ -849,7 +914,6 @@ class HarmorApp {
 
 /**
  * 非線形ノブ UI コンポーネント
- * powerCurve = 1: 線形, >1: 下側に偏る指数カーブ (細かい調整を可能にする)
  */
 class KnobControl {
   constructor(el, min, max, powerCurve, onChange) {
@@ -874,9 +938,15 @@ class KnobControl {
 
     this._drawArc(this.track, this.startAng, this.endAng);
     
-    el.querySelector('svg').addEventListener('mousedown', (e) => this._onMouseDown(e));
+    const svg = el.querySelector('svg');
+    svg.addEventListener('mousedown', (e) => this._onMouseDown(e));
+    svg.addEventListener('touchstart', (e) => this._onTouchStart(e), {passive: false});
+
     window.addEventListener('mousemove', (e) => this._onMouseMove(e));
+    window.addEventListener('touchmove', (e) => this._onTouchMove(e), {passive: false});
+
     window.addEventListener('mouseup', () => this._onMouseUp());
+    window.addEventListener('touchend', () => this._onMouseUp());
   }
 
   setValue(val) {
@@ -888,15 +958,31 @@ class KnobControl {
   _onMouseDown(e) {
     this.isDragging = true;
     this.startY = e.clientY;
-    const norm = Math.pow((this.value - this.min) / (this.max - this.min), 1 / this.power);
-    this.startNorm = norm;
+    this.startNorm = Math.pow((this.value - this.min) / (this.max - this.min), 1 / this.power);
+    e.preventDefault();
+  }
+
+  _onTouchStart(e) {
+    if(e.touches.length !== 1) return;
+    this.isDragging = true;
+    this.startY = e.touches[0].clientY;
+    this.startNorm = Math.pow((this.value - this.min) / (this.max - this.min), 1 / this.power);
     e.preventDefault();
   }
 
   _onMouseMove(e) {
     if (!this.isDragging) return;
-    const dy = this.startY - e.clientY;
-    // 100px のドラッグで全範囲を移動
+    this._processDrag(e.clientY);
+  }
+
+  _onTouchMove(e) {
+    if (!this.isDragging || e.touches.length !== 1) return;
+    this._processDrag(e.touches[0].clientY);
+    e.preventDefault();
+  }
+
+  _processDrag(clientY) {
+    const dy = this.startY - clientY;
     let norm = this.startNorm + dy / 100.0;
     norm = Math.max(0, Math.min(1, norm));
     

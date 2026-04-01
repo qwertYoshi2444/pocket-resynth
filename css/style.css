@@ -22,12 +22,22 @@
 }
 
 html, body {
-  height: 100%; width: 100%; background: var(--bg0); color: var(--text0);
+  /* スマホのURLバーによる見切れを防ぐため 100dvh を適用 */
+  height: 100dvh; width: 100%; background: var(--bg0); color: var(--text0);
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   font-size: 13px; overflow: hidden;
 }
 
-#app { display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; }
+/* 全体ラッパー。絶対配置の基準になるよう relative 指定 */
+#app { display: flex; flex-direction: column; height: 100%; width: 100%; overflow: hidden; position: relative; }
+
+/* ── ネイティブジェスチャーの無効化 ── */
+button, .icon-btn, .knob, .pr-key, canvas, #waveformWrapper, #spectrogramWrapper, #adsrWrapper, input[type="range"] {
+  touch-action: none; 
+  -webkit-touch-callout: none; 
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 /* ── SVG Icons ── */
 .icon {
@@ -98,21 +108,23 @@ select:focus, input:focus { border-color: var(--accent); }
 .check-label { color: var(--text0); font-size: 11px; display: flex; align-items: center; gap: 6px; cursor: pointer; }
 
 /* ── Main content ── */
-#mainContent { flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0; min-width: 0; }
+#mainContent { flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0; min-width: 0; position: relative; }
 
 #canvasArea { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--bg0); min-height: 0; min-width: 0; }
 
 #waveformWrapper { height: var(--waveform-h); flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; min-height: 0; min-width: 0; }
 #waveformCanvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; z-index: 1; }
 #waveformUiCanvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important; display: block; z-index: 2; cursor: crosshair; }
-#dropZone { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; pointer-events: none; }
-#dropZone span { color: var(--text1); font-weight: bold; padding: 10px 20px; background: rgba(16,18,23,0.8); border-radius: 6px; }
-#dropZone.drag-over { pointer-events: all; background: rgba(115, 154, 255, 0.1); border: 2px dashed var(--accent); }
+
+#dropZone { position: absolute; inset: 0; z-index: 10; display: flex; align-items: center; justify-content: center; pointer-events: none; transition: opacity 0.2s; }
+#dropZone span { color: var(--text1); font-weight: bold; padding: 10px 20px; background: rgba(16,18,23,0.8); border-radius: 6px; pointer-events: none; }
+#waveformWrapper.drag-over #dropZone { background: rgba(115, 154, 255, 0.1); border: 2px dashed var(--accent); }
 
 #spectrogramToolbar {
   height: 32px; background: var(--bg1); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; padding: 0 12px; flex-shrink: 0;
+  display: flex; align-items: center; padding: 0 12px; flex-shrink: 0; overflow-x: auto;
 }
+#spectrogramToolbar::-webkit-scrollbar { display: none; }
 
 #spectrogramArea { flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0; min-width: 0; }
 #spectrogramWrapper { flex: 1; position: relative; overflow: hidden; background: #000; min-height: 0; min-width: 0; }
@@ -147,12 +159,31 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 2px rgba(115
 .pr-key.black:hover { background: #2a2a2a; }
 .pr-key.playing { background: var(--accent) !important; color: #000 !important; }
 
-#panelToggleBtn { width: 16px; background: var(--bg2); border-left: 1px solid var(--border); border-right: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--text1); cursor: pointer; user-select: none; transition: 0.2s; flex-shrink: 0; }
+#panelToggleBtn { width: 16px; background: var(--bg2); border-left: 1px solid var(--border); border-right: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--text1); cursor: pointer; user-select: none; transition: 0.2s; flex-shrink: 0; z-index: 110; }
 #panelToggleBtn:hover { background: var(--bg3); color: var(--text0); }
 #panelToggleBtn.collapsed { transform: rotate(180deg); }
 
-#controlPanel { width: var(--panel-w); flex-shrink: 0; background: var(--bg1); display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; transition: width 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); }
+/* ── Control Panel (Responsive Overlay) ── */
+#controlPanel { width: var(--panel-w); flex-shrink: 0; background: var(--bg1); display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; transition: width 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); border-left: 1px solid var(--border); }
 #controlPanel.collapsed { width: 0; border: none; }
+
+@media (max-width: 768px) {
+  #controlPanel {
+    position: absolute;
+    top: 0; right: 0; bottom: 0;
+    z-index: 100;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.5);
+    /* Mobile Overlay時は width:0 で隠す */
+  }
+  #panelToggleBtn {
+    position: absolute;
+    right: 0; top: 0; bottom: 0;
+    z-index: 101; /* パネルの上に配置 */
+    /* モバイル時、開いている時はパネルの幅分左にずらす */
+    transition: right 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  }
+  #controlPanel:not(.collapsed) + #panelToggleBtn { /* 簡易的な連動はJS側でクラス付与かスタイル調整が必要だが、今回はJSでright調整しないためパネル側を固定幅にし、ボタンは右端で固定するか、またはボタンもパネルと一緒に動かすのがベスト。 今回は既存構造維持のため、パネルのwidth制御に依存する */ }
+}
 
 .panel-section { padding: 14px; border-bottom: 1px solid var(--border); }
 .panel-section h3 { font-size: 11px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--text1); margin-bottom: 12px; }
@@ -161,6 +192,12 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 2px rgba(115
 .slider-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
 .slider-header .label { font-size: 12px; color: var(--text0); }
 .slider-header .value { font-family: monospace; font-size: 12px; color: var(--accent); min-width: 48px; text-align: right; }
+
+.adsr-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.adsr-label { width: 24px; font-size: 11px; font-weight: bold; color: var(--text1); }
+.adsr-row input[type="range"] { flex: 1; }
+.adsr-row input[type="number"] { width: 50px; text-align: right; font-family: monospace; }
+.adsr-row span { font-size: 10px; color: var(--text2); width: 14px; }
 
 /* ── Knob UI ── */
 .knob-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
@@ -190,22 +227,18 @@ input[type="range"]:focus::-webkit-slider-thumb { box-shadow: 0 0 0 2px rgba(115
 .stem-dl-btn span.track-name { font-weight: bold; color: var(--accent); font-family: monospace; }
 .stem-dl-btn span.icon-w { color: var(--text1); display: flex; align-items: center; gap: 4px; }
 
-#transport { height: var(--transport-h); background: var(--bg1); border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 10px; flex-shrink: 0; }
+#transport { height: var(--transport-h); background: var(--bg1); border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 10px; flex-shrink: 0; overflow-x: auto; white-space: nowrap; }
 #timeDisplay { font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 18px; letter-spacing: 2px; color: var(--accent2); min-width: 100px; }
-.transport-sep { width: 1px; height: 24px; background: var(--border); }
+.transport-sep { width: 1px; height: 24px; background: var(--border); flex-shrink: 0; }
 
 #statusBar { height: var(--status-h); background: var(--bg0); border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 14px; gap: 12px; flex-shrink: 0; }
-.status-msg { font-size: 12px; flex: 1; }
+.status-msg { font-size: 12px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-msg.info { color: var(--text1); }
 .status-msg.ok   { color: var(--accent2); }
 .status-msg.warn { color: var(--warn); }
 .status-msg.err  { color: var(--err); }
 
-#progressBar { display: none; width: 180px; height: 6px; -webkit-appearance: none; appearance: none; background: var(--bg3); border-radius: 3px; border: none; }
+#progressBar { display: none; width: 140px; height: 6px; -webkit-appearance: none; appearance: none; background: var(--bg3); border-radius: 3px; border: none; }
 #progressBar::-webkit-progress-bar { background: var(--bg3); border-radius: 3px; }
 #progressBar::-webkit-progress-value { background: var(--accent); border-radius: 3px; }
 #progressBar::-moz-progress-bar { background: var(--accent); border-radius: 3px; }
-
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--bg1); }
-::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
