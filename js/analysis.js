@@ -77,14 +77,18 @@ class SpectralAnalyzer {
       const peaks = this._detectPeaks(this._real, this._imag, mag);
       const time  = (offset + N / 2) / sr;
       
-      // Residual (ノイズ) 成分の抽出
-      // ピーク周辺のエネルギーを減衰させ、残差スペクトルを生成
+      // Residual (ノイズ) 成分の抽出 (Spectral Subtraction近似)
       const resMag = new Float64Array(mag);
       for (const p of peaks) {
         const bin = Math.round(p.bin);
-        // メインローブ周辺（Hann窓の広がり分）のエネルギーを削る
+        const pMag = p.amp * (this.winSum / 2);
+        
+        // Hann窓のメインローブ幅（約±2ビン）に対して近似減算
         for(let i = Math.max(1, bin - 2); i <= Math.min(halfN - 1, bin + 2); i++) {
-          resMag[i] *= 0.05; 
+          const dist = Math.abs(i - p.bin);
+          const windowShape = Math.max(0, 0.5 * (1 + Math.cos(Math.PI * dist / 2)));
+          const subMag = pMag * windowShape;
+          resMag[i] = Math.max(0, resMag[i] - subMag);
         }
       }
 
@@ -171,11 +175,20 @@ class SpectralAnalyzer {
   _detectPeaks(real, imag, mag) {
     const halfN = this.fftSize >> 1, sr = this.sampleRate, N = this.fftSize;
     const peaks = [];
+    const baseThreshSq = this.thresh * this.thresh;
 
     for (let i = 2; i < halfN - 2; i++) {
       const m0 = mag[i] * mag[i] * (this.winSum / 2) * (this.winSum / 2); // Squared magnitude
 
-      if (m0 <= this.thresh * this.thresh) continue;
+      // 低域保護: 500Hz以下は閾値を最大12dB(約0.25倍)まで緩める
+      const freqEst = i * sr / N;
+      let localThreshSq = baseThreshSq;
+      if (freqEst < 500) {
+        const factor = Math.max(0.25, freqEst / 500);
+        localThreshSq *= factor;
+      }
+
+      if (m0 <= localThreshSq) continue;
       
       const m_1 = real[i-1]*real[i-1] + imag[i-1]*imag[i-1];
       const m_2 = real[i-2]*real[i-2] + imag[i-2]*imag[i-2];
@@ -214,6 +227,7 @@ class SpectralAnalyzer {
     let nextId   = 0;
     const tol    = this.freqTol;
     const BATCH  = 128;
+    const MAX_SLEEP = 2; // 最大2フレームの消失を許容
 
     for (let fi = 0; fi < frames.length; fi++) {
       if (fi % BATCH === 0) {
@@ -226,7 +240,13 @@ class SpectralAnalyzer {
       const nextActive = new Map();
 
       const activeArr = Array.from(active.values())
-        .map(p => ({ id: p.id, segs: p.segs, lastFreq: p.segs[p.segs.length - 1].freq }))
+        .map(p => ({
+          id: p.id,
+          segs: p.segs,
+          lastFreq: p.segs[p.segs.length - 1].freq,
+          lastAmp: p.segs[p.segs.length - 1].amp,
+          sleep: p.sleep || 0
+        }))
         .sort((a, b) => a.lastFreq - b.lastFreq);
 
       for (const ap of activeArr) {
@@ -242,18 +262,26 @@ class SpectralAnalyzer {
         if (best >= 0) {
           matched[best] = 1;
           ap.segs.push({ fi, ...peaks[best] });
-          nextActive.set(ap.id, { id: ap.id, segs: ap.segs });
+          nextActive.set(ap.id, { id: ap.id, segs: ap.segs, sleep: 0 }); // 復活・継続
         } else {
-          const last = ap.segs[ap.segs.length - 1];
-          ap.segs.push({ fi, freq: last.freq, amp: 0, phase: last.phase });
-          if (ap.segs.length >= this.minFrames) completed.push({ id: ap.id, segs: ap.segs });
+          // 見失った場合、MAX_SLEEPまでは仮想的に減衰させて保持（Gap充填）
+          if (ap.sleep < MAX_SLEEP) {
+            const last = ap.segs[ap.segs.length - 1];
+            ap.segs.push({ fi, freq: last.freq, amp: last.amp * 0.5, phase: last.phase });
+            nextActive.set(ap.id, { id: ap.id, segs: ap.segs, sleep: ap.sleep + 1 });
+          } else {
+            // 完全に見失った
+            const last = ap.segs[ap.segs.length - 1];
+            ap.segs.push({ fi, freq: last.freq, amp: 0, phase: last.phase });
+            if (ap.segs.length >= this.minFrames) completed.push({ id: ap.id, segs: ap.segs });
+          }
         }
       }
 
       for (let pi = 0; pi < peaks.length; pi++) {
         if (!matched[pi]) {
           const id = nextId++;
-          nextActive.set(id, { id, segs: [{ fi, ...peaks[pi] }] });
+          nextActive.set(id, { id, segs: [{ fi, ...peaks[pi] }], sleep: 0 });
         }
       }
 

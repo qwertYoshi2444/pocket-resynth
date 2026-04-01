@@ -634,7 +634,7 @@ class HarmorApp {
 
     try {
       const speed = this.playbackSpeed;
-      this._status('MIDI ミックス中 (ADSR付与 & オートゲイン)…', 'info');
+      this._status('MIDI ミックス中 (ADSR付与 & ソフトクリップ)…', 'info');
 
       const lastEvent = this.midiEvents[this.midiEvents.length - 1];
       const releaseSec = this.adsr.r / 1000.0;
@@ -690,15 +690,13 @@ class HarmorApp {
         let maxPoly = 1;
         for (let p of polyMap) if (p > maxPoly) maxPoly = p;
         
-        const gainFactor = 1.0 / Math.max(1, Math.sqrt(maxPoly));
-        let peak = 0;
+        // 変更箇所: 和音数に応じた緩やかなゲイン低下
+        const gainFactor = 1.0 / Math.max(1, Math.pow(maxPoly, 0.4));
+        const headroom = 0.8; // 最終ミックス時のヘッドルーム
+
         for (let s = 0; s < masterLen; s++) {
-          buf[s] *= gainFactor;
-          if (Math.abs(buf[s]) > peak) peak = Math.abs(buf[s]);
-        }
-        if (peak > 0.99) {
-          const k = 0.95 / peak;
-          for (let s = 0; s < masterLen; s++) buf[s] *= k;
+          // 強制的なピークノーマライズではなく、安全なソフトクリップ(tanh)で丸める
+          buf[s] = Math.tanh(buf[s] * gainFactor * headroom);
         }
 
         const name = isStem ? `Track_${t+1}.wav` : `harmor-midi-render.wav`;

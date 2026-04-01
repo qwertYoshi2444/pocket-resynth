@@ -1,10 +1,6 @@
 'use strict';
 /**
  * worker_synth.js — Web Worker for High Precision Additive & Residual Synthesis
- * 
- * - Deterministic (Peak) 加算合成に加え、
- * - Stochastic (Noise/Residual) 成分（高周波空気感）を位相ランダム化により帯域制限ノイズとして復元。
- * - 出力WAVの長さは指定された絶対時間に固定し、Playback Speedの影響から分離。
  */
 
 let sampleRate = 44100;
@@ -38,38 +34,46 @@ self.onmessage = function(e) {
       let outBuffer = new Float64Array(totalSamples);
       const twoPi = 2 * Math.PI;
 
-      // Noise Phase Randomization 用 (帯域幅の概算)
+      // Noise Phase Randomization 用
       const noiseBandwidthFactor = 0.5;
 
-      // 0.0倍 (Freeze) の処理
+      // ==========================================
+      // 0.0倍 (Freeze) の処理: 前後フレームの平均化
+      // ==========================================
       if (speed <= 0.001) {
-        const active = [];
+        const active = new Map();
+        
+        // startFrame 前後 ±1 フレームを集計して平均化
         for (let i = 0; i < partials.length; i++) {
           const segs = partials[i].segs;
+          let sumFreq = 0, sumAmp = 0, count = 0;
           for (let j = 0; j < segs.length; j++) {
-            if (Math.abs(segs[j].fi - startFrame) <= 2 && segs[j].amp > 1e-4) {
-              active.push({ p: partials[i], seg: segs[j] });
-              break;
+            if (Math.abs(segs[j].fi - startFrame) <= 1 && segs[j].amp > 1e-5) {
+              sumFreq += segs[j].freq;
+              sumAmp += segs[j].amp;
+              count++;
             }
+          }
+          if (count > 0) {
+            active.set(i, { p: partials[i], freq: sumFreq / count, amp: sumAmp / count });
           }
         }
 
-        for (let i = 0; i < active.length; i++) {
-          const item = active[i];
-          const seg = item.seg;
-          const isNoise = item.p.isNoise;
+        const ratio = pitchRatioArr[startFrame] || 1.0;
 
-          const ratio = pitchRatioArr[seg.fi] || 1.0;
-          // ノイズ成分も一応ピッチシフトに追従させる
-          const f = Math.min(seg.freq * ratio, sampleRate * 0.49);
+        for (const item of active.values()) {
+          const isNoise = item.p.isNoise;
+          const f = Math.min(item.freq * ratio, sampleRate * 0.49);
           const inc = twoPi * f / sampleRate;
-          const a = seg.amp * (isNoise ? noiseScale : 1.0);
+          const a = item.amp * (isNoise ? noiseScale : 1.0);
           
-          let phase = seg.phase;
+          let phase = Math.random() * twoPi; // フリーズ時は初期位相ランダム化で自然さを出す
           const phaseJitter = isNoise ? (twoPi * f * noiseBandwidthFactor / sampleRate) : 0;
 
           for (let s = 0; s < totalSamples; s++) {
-            outBuffer[s] += a * Math.sin(phase);
+            // ノイズ成分は振幅にも微小なランダム変調をかける (AM変調)
+            const currentA = isNoise ? a * (0.5 + Math.random()) : a;
+            outBuffer[s] += currentA * Math.sin(phase);
             phase += inc;
             if (isNoise) phase += (Math.random() * 2 - 1) * phaseJitter;
             if (phase > Math.PI) phase -= twoPi;
@@ -77,7 +81,9 @@ self.onmessage = function(e) {
           }
         }
 
+      // ==========================================
       // 通常 (Time-Stretch) の処理
+      // ==========================================
       } else {
         const nyq = sampleRate * 0.49;
         const BATCH = Math.max(1, Math.floor(partials.length / 20));
@@ -135,17 +141,33 @@ self.onmessage = function(e) {
             let currF = f1 + fStep * (writeStart - startSample);
             let currA = a1 + aStep * (writeStart - startSample);
 
+            // 位相補正 (ピッチシフトがほとんど無いTonal成分の場合のみ、目標位相へ着地させる)
+            let phaseCorrectionOffset = 0;
+            if (!isNoise && Math.abs(r1 - 1.0) < 0.01 && Math.abs(r2 - 1.0) < 0.01) {
+              const expectedPhaseEnd = phase + twoPi * (f1 + f2) * 0.5 * durSamples / sampleRate;
+              const targetPhase = s2.phase;
+              let phaseDiff = (targetPhase - expectedPhaseEnd) % twoPi;
+              if (phaseDiff > Math.PI) phaseDiff -= twoPi;
+              if (phaseDiff < -Math.PI) phaseDiff += twoPi;
+              phaseCorrectionOffset = phaseDiff / durSamples; // 1サンプルあたりの位相補正量
+            }
+
             for (let s = writeStart; s < writeEnd; s++) {
               if (s >= 0 && s < totalSamples) {
-                outBuffer[s] += currA * Math.sin(phase);
+                // ノイズ成分は振幅をサンプル単位で少し揺らす
+                const modA = isNoise ? currA * (0.5 + Math.random()) : currA;
+                outBuffer[s] += modA * Math.sin(phase);
+                
                 lastWrittenSample = s;
                 lastFreq = currF;
                 lastAmp = currA;
               }
-              phase += twoPi * currF / sampleRate;
+              
+              // 基本の周波数インクリメント + 位相ズレ補正
+              let stepPhase = twoPi * currF / sampleRate + phaseCorrectionOffset;
+              phase += stepPhase;
               
               if (isNoise) {
-                // ノイズ帯域幅に応じた位相ランダマイズ
                 const jitter = twoPi * currF * noiseBandwidthFactor / sampleRate;
                 phase += (Math.random() * 2 - 1) * jitter;
               }
@@ -155,6 +177,11 @@ self.onmessage = function(e) {
               
               currF += fStep;
               currA += aStep;
+            }
+            
+            // フレーム終了時に解析位相に強制スナップ (補正できなかった余剰分をリセット)
+            if (!isNoise && Math.abs(r2 - 1.0) < 0.01) {
+              phase = s2.phase;
             }
           }
 
@@ -167,7 +194,8 @@ self.onmessage = function(e) {
             for (let s = 1; s <= extendSamples; s++) {
               const idx = lastWrittenSample + s;
               if (idx < totalSamples) {
-                outBuffer[idx] += lastAmp * Math.sin(phase);
+                const modA = isNoise ? lastAmp * (0.5 + Math.random()) : lastAmp;
+                outBuffer[idx] += modA * Math.sin(phase);
               }
               phase += inc;
               if (isNoise) phase += (Math.random() * 2 - 1) * jitter;
@@ -178,40 +206,32 @@ self.onmessage = function(e) {
         }
       }
 
-      // ──────────────────────────────────────────────────────────────────
-      // White Noise Generation (bandpass via 1-pole HP + LP cascade)
-      // ──────────────────────────────────────────────────────────────────
+      // ==========================================
+      // White Noise Generation
+      // ==========================================
       if (wn.amount > 0.001) {
         const wnAmp = wn.amount;
-
-        // 1-pole coefficients
-        // High-pass: y_hp[n] = alpha_hp * (y_hp[n-1] + x[n] - x[n-1])
-        // Low-pass:  y_lp[n] = alpha_lp * x[n] + (1 - alpha_lp) * y_lp[n-1]
         const twoPiSr = twoPi / sampleRate;
         const loCut = Math.max(20, Math.min(wn.loCut, sampleRate * 0.48));
         const hiCut = Math.max(loCut + 10, Math.min(wn.hiCut, sampleRate * 0.49));
 
-        const alphaHP = 1.0 / (1.0 + twoPiSr * loCut);   // HP coefficient
-        const alphaLP = twoPiSr * hiCut / (1.0 + twoPiSr * hiCut); // LP coefficient
+        const alphaHP = 1.0 / (1.0 + twoPiSr * loCut);
+        const alphaLP = twoPiSr * hiCut / (1.0 + twoPiSr * hiCut);
 
         let yHP = 0, yLP = 0, xPrev = 0;
 
-        // Apply ADSR envelope-shaped amplitude to white noise too
         for (let s = 0; s < totalSamples; s++) {
           const raw = Math.random() * 2 - 1;
-
-          // High-pass
           yHP = alphaHP * (yHP + raw - xPrev);
           xPrev = raw;
-
-          // Low-pass applied to HP output
           yLP = alphaLP * yHP + (1.0 - alphaLP) * yLP;
-
           outBuffer[s] += yLP * wnAmp;
         }
       }
 
+      // ==========================================
       // ADSR エンベロープ
+      // ==========================================
       if (adsr) {
         const aSamples = Math.floor((adsr.a / 1000) * sampleRate);
         const dSamples = Math.floor((adsr.d / 1000) * sampleRate);
@@ -235,15 +255,14 @@ self.onmessage = function(e) {
         }
       }
 
-      // 正規化 (ピークを 0.9 に合わせる)
-      let peak = 0;
+      // ==========================================
+      // ソフトクリッパー (正規化の撤廃)
+      // ==========================================
+      // ハードなピークノーマライズを廃止し、ヘッドルーム(0.5倍)を持たせた上で、
+      // 歪みを抑えつつ安全に-1〜1に収める Soft Clipper (tanh) を適用。
+      const headroom = 0.5;
       for (let i = 0; i < outBuffer.length; i++) {
-        const a = Math.abs(outBuffer[i]);
-        if (a > peak) peak = a;
-      }
-      if (peak > 1e-6) {
-        const k = 0.9 / peak;
-        for (let i = 0; i < outBuffer.length; i++) outBuffer[i] *= k;
+        outBuffer[i] = Math.tanh(outBuffer[i] * headroom);
       }
 
       self.postMessage({ type: 'PROGRESS', value: 1.0 });
